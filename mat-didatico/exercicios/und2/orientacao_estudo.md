@@ -44,11 +44,11 @@ A prova será objetiva. As questões poderão usar figuras, listas de adjacênci
 
 - definição de circuito euleriano e trilha euleriana;
 - critérios para grafos eulerianos não dirigidos;
-- critérios para dígrafos eulerianos;
-- paridade dos graus e balanceamento entre entrada e saída;
+- ~~critérios para dígrafos eulerianos~~;
+- ~~paridade dos graus e balanceamento entre entrada e saída~~;
 - conectividade em problemas eulerianos;
 - eulerização;
-- problemas típicos: decidir se existe trilha ou circuito euleriano e justificar por graus, balanceamento e conectividade.
+- problemas típicos: decidir se existe trilha ou circuito euleriano e justificar por graus, ~~balanceamento~~ e conectividade.
 
 ### 6. Algoritmos Para Circuito Euleriano
 
@@ -63,7 +63,7 @@ A prova será objetiva. As questões poderão usar figuras, listas de adjacênci
 ### 7. Grafos Hamiltonianos
 
 - definição de caminho hamiltoniano e ciclo hamiltoniano;
-- diferença entre Hamilton e Euler;
+- diferença entre grafos Hamiltoniano e Euleriano;
 - impedimentos como vértice pendente e vértice de articulação;
 - aplicação dos teoremas de Dirac e Ore;
 - problemas típicos: verificar caminho ou ciclo hamiltoniano e aplicar condições suficientes ou impedimentos.
@@ -82,42 +82,43 @@ A prova será objetiva. As questões poderão usar figuras, listas de adjacênci
 - definição do problema do carteiro chinês;
 - relação com grafos eulerianos;
 - caso não dirigido: identificação de vértices de grau ímpar;
-- caso dirigido: identificação de vértices desbalanceados por grau de entrada e grau de saída;
+- ~~caso dirigido: identificação de vértices desbalanceados por grau de entrada e grau de saída~~;
 - duplicação de caminhos, eulerização e multigrafo resultante;
 - cálculo do custo total do percurso;
 - diferença entre carteiro chinês e TSP;
-- problemas típicos: identificar vértices ímpares no caso não dirigido ou vértices desbalanceados no caso dirigido, duplicar caminhos e calcular o custo do percurso eulerizado.
+- problemas típicos: identificar vértices ímpares no caso não dirigido ~~ou vértices desbalanceados no caso dirigido~~, duplicar caminhos e calcular o custo do percurso eulerizado.
 
 ### 10. Coloração de Grafos
 
 - modelagem de incompatibilidades como grafo;
 - definição de coloração de vértices;
 - coloração sequencial simples como heurística gulosa principal;
-- cores proibidas, cores disponíveis e validade de uma coloração;
+- cores não disponíveis, cores disponíveis e validade de uma coloração;
 - dependência da ordem dos vértices em algoritmos gulosos;
-- DSatur como referência de heurística gulosa;
+- ~~DSatur como referência de heurística gulosa~~;
 - problemas típicos: validar uma coloração, aplicar coloração gulosa e comparar o número de cores usadas.
 
 ### 11. Isomorfismo
 
 - definição de isomorfismo de grafos e de árvores;
-- preservação de adjacências;
+- relações de adjacências;
 - limites da comparação visual e da sequência de graus;
 - validação de árvore;
 - folhas e centro de uma árvore;
-- codificação canônica de árvores;
-- ordenação dos códigos dos filhos;
-- problemas típicos: testar equivalência estrutural, comparar adjacências e aplicar codificação canônica em árvores.
+- codificação estrutural de árvores (AHU);
+- ordenação dos códigos dos filhos (AHU);
+- problemas típicos: testar equivalência estrutural, comparar adjacências e aplicar codificação estrutural em árvores (AHU).
 
 ### 12. Emparelhamento em Grafos
 
-- definição de emparelhamento; vértices saturados e não saturados;
+- definição de emparelhamento; vértices saturados e não saturados ou exposto;
 - diferença entre emparelhamento maximal, máximo e perfeito;
 - tamanho de emparelhamento em grafos completos e bipartidos completos;
-- caminhos alternantes e caminhos de aumento;
-- ideia do Teorema de Berge: emparelhamento máximo quando não há caminho de aumento;
-- relação com eulerização e carteiro chinês em casos simples;
+- caminhos alternantes e caminhos aumentante;
+- ideia do Teorema de Berge: emparelhamento máximo quando não há caminho aumentante;
+- ~~relação com eulerização e carteiro chinês em casos simples~~;
 - problemas típicos: identificar se um conjunto de arestas é emparelhamento, verificar se é maximal, máximo ou perfeito, encontrar caminho de aumento e interpretar emparelhamento em casos reais.
+- algortimo de emparelhamento máximo em grafos bipartidos.
 
 ## Estruturas de Dados
 
@@ -149,13 +150,13 @@ Estude pseudocódigos de:
 - identificação de vértices de articulação;
 - validação de árvore;
 - busca de centro de árvore;
-- codificação canônica de árvore;
+- codificação estrutural de árvore (AHU);
 - Hierholzer;
 - Fleury;
 - eulerização;
 - carteiro chinês em caso simples;
 - coloração sequencial simples como heurística gulosa principal;
-- DSatur como referência de heurística gulosa;
+- ~~DSatur como referência de heurística gulosa~~;
 - nearest insertion;
 - smallest insertion.
 
