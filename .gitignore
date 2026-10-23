@@ -21,3 +21,7 @@ __pycache__/
 /dataset/largeEWG.txt
 /dataset/largeEWD.txt
 /dataset/largeUF.txt
+
+# IntelliJ
+.idea/
+*.iml
