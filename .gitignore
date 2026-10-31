@@ -25,3 +25,25 @@ __pycache__/
 # IntelliJ
 .idea/
 *.iml
+
+# projeto uv: pyproject.toml, uv.lock e .python-version são versionados
+manim-animations/.venv/
+manim-animations/media/Tex
+manim-animations/media/texts
+manim-animations/media_corrigido/texts/
+manim-animations/.*
+!manim-animations/.python-version
+
+media/images
+media/Tex
+media/texts
+
+# arquivos temporários do Manim (render em partes), em qualquer pasta de mídia
+**/partial_movie_files/
+
+# 480p15 é só QA local; a entrega versionada é a 1080p60
+manim-animations/media_corrigido/videos/**/480p15/
+
+
+
+
