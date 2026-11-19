@@ -680,7 +680,7 @@ def coletar_detalhado() -> list[Step]:
         elif funcao == "IndexMinPQ.contains":
             index = loc.get("index")
             if linha == 32:
-                acao = f"self._validar_indice({index}): 0 <= {index} < V?"
+                acao = f"self._validate_index({index}): 0 <= {index} < V?"
             elif linha == 33:
                 ramo = next(
                     (

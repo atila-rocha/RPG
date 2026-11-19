@@ -1092,7 +1092,7 @@ def _descrever_auxiliar(ev: dict, proximo: dict, estado: dict) -> tuple[str, tup
         index = locais.get("index")
         if linha == 32:
             return (
-                f"self._validar_indice({index}): 0 <= {index} < V?",
+                f"self._validate_index({index}): 0 <= {index} < V?",
                 SEM_DESTAQUE,
                 PAUSA_CURTA,
             )
