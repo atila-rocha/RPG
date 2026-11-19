@@ -1,10 +1,12 @@
 # Render 480p serial das cenas de Fluxo Maximo V2 (fonte maior + paginacao + 5 abas).
-# Nunca sobrescreve media/, media_1080/ nem media_dev_fluxo/ (V1).
+# Saída: build\media-fluxo-v2; log em build\logs\render_fluxo_480_v2.log.
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 $env:PYTHONIOENCODING = 'utf-8'
+$py = '.\.venv\Scripts\python.exe'
+New-Item -ItemType Directory -Force -Path 'build\logs' | Out-Null
 
-$log = 'render_fluxo_480_v2.log'
+$log = 'build\logs\render_fluxo_480_v2.log'
 "[$(Get-Date -Format s)] INICIO V2" | Out-File -FilePath $log -Encoding utf8
 
 $tarefas = @(
@@ -18,10 +20,10 @@ foreach ($t in $tarefas) {
     # 5.1 grava UTF-16 e, misturado com os `Out-File -Encoding utf8` dos
     # marcadores, tornava o log ilegivel (os marcadores sumiam no meio do
     # texto). Buffer inteiro em memoria: 17 MB e barato.
-    $saida = & .\.venv\Scripts\python.exe -m manim -ql --media_dir media_dev_fluxo_v2 $t.Arquivo $t.Cena 2>&1
+    $saida = & $py -m manim -ql --media_dir build\media-fluxo-v2 $t.Arquivo $t.Cena 2>&1
     $exit = $LASTEXITCODE
     $saida | Out-File -FilePath $log -Append -Encoding utf8
-    $mp4 = Get-ChildItem "media_dev_fluxo_v2\videos\$(([IO.Path]::GetFileNameWithoutExtension($t.Arquivo)))\480p15\$($t.Cena).mp4" -ErrorAction SilentlyContinue
+    $mp4 = Get-ChildItem "build\media-fluxo-v2\videos\$(([IO.Path]::GetFileNameWithoutExtension($t.Arquivo)))\480p15\$($t.Cena).mp4" -ErrorAction SilentlyContinue
     if ($mp4) {
         "[$(Get-Date -Format s)] FIM $($t.Cena) exit=$exit | $([math]::Round($mp4.Length/1MB,1)) MB" | Out-File -FilePath $log -Append -Encoding utf8
         $sha = (Get-FileHash $mp4.FullName -Algorithm SHA256).Hash

@@ -5,6 +5,7 @@ documento: a receita para regenerá-los a partir de `src/` + `dataset/` + os scr
 
 Grafo de referência: **tinyEWG** — 8 vértices, 16 arestas (padrão do projeto; `MST_GRAFO` não definida).
 Intérprete: `.venv\Scripts\python.exe` na raiz de `manim-animations/`.
+Render vai para `build/media` (descartável); só o vídeo final, renomeado, chega a `entregas/`.
 
 ## tinyEWG 1080p60
 
@@ -51,14 +52,23 @@ A entrega atual usa tinyEWG. O conjunto tinyMST6 (6 vértices, custo 13) foi mov
 `build/_arquivo/` e continua reproduzível:
 
 ```powershell
-$env:MST_GRAFO = "..\dataset\tinyMST6.txt"
-.\.venv\Scripts\python.exe -m manim render src\kruskal_mst_scene_new.py KruskalExecutionScene_new -qh --media_dir build\media
+$env:MST_GRAFO = "dataset\tinyMST6.txt"   # relativo à raiz do repositório
+.\.venv\Scripts\python.exe -m manim render src\kruskal_mst_scene_new.py KruskalExecutionScene_new -qh --media_dir build\media-tinyMST6
 ```
 
 Tempo medido do conjunto tinyMST6: ≈ 1h14 (1795 + 1437 + 1174 s).
 
-## Regeração dos `.ps1`
+## Regeração pelos `.ps1`
 
 `render_1080p.ps1`, `render_1080p_resto.ps1`, `render_correcoes.ps1` e `render_dois_grafos.ps1`
-continuam na raiz de `manim-animations/` e usam `$PSScriptRoot` — funcionam de qualquer diretório.
-Eles gravam em `media_1080/` e `media_1080_mst6/`, que agora são ignorados pelo git.
+continuam na raiz de `manim-animations/`, um por conjunto de cenas, e usam `$PSScriptRoot` em tudo
+(python, cenas, `--media_dir` e logs) — funcionam de qualquer diretório. Gravam em `build\media`
+(entrada padrão), `build\media-tinyMST6` (segunda entrada) e `build\logs\`. Nenhuma pasta
+`media_*` nasce mais na raiz.
+
+## Levar para a entrega
+
+1. Render final em `build\media` (1080p60).
+2. Conferir SHA-256 e duração do mp4.
+3. Copiar com nome semântico para `entregas\<entrada>\cenas\` (ou `integrais\`, via `_concat_mp4.py`).
+4. Registrar a linha nova (arquivo, duração, tamanho, hash) na tabela acima.

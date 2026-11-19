@@ -41,3 +41,31 @@ O estado a partir daqui é o primeiro commit versionado de `src/`, `docs/` e `en
   48 deles importam `mst_common`/`flow_common`/`dijkstra_common`, então só funcionam dentro de `src/`.
 - `.ps1` originais (com caminho absoluto): `build\_arquivo\ps1_antes\`.
 - O histórico git descartado **não** é reversível.
+
+## Padronização das fases (mesmo dia)
+
+Depois da reorganização, o contrato de caminhos foi fechado em `manim-animations/README.md`
+§ "Convenções de caminhos" e propagado para as skills `manim-*` e os subagentes
+(`roteiro`, `algoritmo`, `visual`, `codificador`, `qa`, `pipeline`):
+
+| mudança | antes | agora |
+|---|---|---|
+| render de trabalho | `media_dev/`, `media_corrigido/`, `media_1080*/` na raiz | `build/media/` e `build/media-<stem>/` |
+| log de render | raiz de `manim-animations/` | `build/logs/` |
+| golden de passos | `media_corrigido/stages*.json` | `build/goldens/stages*.json` |
+| `.ps1` | caminho relativo ao CWD (`$py`, `$log`, `--media_dir`) | tudo por `$PSScriptRoot` |
+| `MST_GRAFO` relativo | documentado como `..\dataset\...` | `dataset\...` (resolvido da raiz do repo) |
+| frame de inspeção | `src/_layout_check.py` (sumira na quarentena) | restaurado em `src/` |
+
+Correções de código que apareceram no caminho:
+
+- `algs4-py/algs4/index_min_pq.py`: `swim`/`sink`/`del_min`/`delete` não atualizavam o índice reverso
+  `qp`; a partir do commit `169bb03` (mesmo dia, 17:10), `contains` passou a ler `qp` e o trace do
+  Prim Eager estourava `IndexError`. Corrigido mantendo `qp` nas trocas; Prim e Kruskal agora
+  concordam (1,81 em tinyEWG, 13,0 em tinyMST6).
+- `validate_mst_scenes.py`: `GOLDEN_EAGER` e a ordem de `del_min` estavam registrados com o
+  comportamento defeituoso (`insert` duplicado, 5 antes de 3). Foram refeitos a partir do trace
+  correto: `7, 1, 2, 3, 5, 4, 6`.
+- A trilha de fluxo (`validate_flow_scenes.py`) continua com 2 falhas conhecidas — golden do modo
+  compacto e a linha 131 de `FordFulkerson.is_feasible` sem texto declarado — herdadas do trabalho
+  de fluxo em andamento, não relacionadas a esta padronização.

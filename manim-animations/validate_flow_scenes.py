@@ -591,7 +591,7 @@ def exportar_stages() -> str:
     ativo = rec.caminho_rede()
     padrao = ativo.resolve() == rec.REDE_PADRAO.resolve()
     nome_arquivo = "stages_fluxo.json" if padrao else f"stages_fluxo_{ativo.stem}.json"
-    destino = raiz / "media_corrigido" / nome_arquivo
+    destino = raiz / "build" / "goldens" / nome_arquivo
     destino.parent.mkdir(parents=True, exist_ok=True)
 
     dados = {}

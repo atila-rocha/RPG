@@ -1,10 +1,12 @@
 # Render 480p serial das cenas de Fluxo Máximo (Edmonds-Karp e Ford-Fulkerson/DFS).
-# Nunca sobrescreve media/ nem media_1080/: tudo vai para media_dev_fluxo/.
+# Saída: build\media-fluxo; log em build\logs\render_fluxo_480.log.
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 $env:PYTHONIOENCODING = 'utf-8'
+$py = '.\.venv\Scripts\python.exe'
+New-Item -ItemType Directory -Force -Path 'build\logs' | Out-Null
 
-$log = 'render_fluxo_480.log'
+$log = 'build\logs\render_fluxo_480.log'
 "[$(Get-Date -Format s)] INICIO" | Out-File -FilePath $log -Encoding utf8
 
 $tarefas = @(
@@ -16,7 +18,7 @@ $tarefas = @(
 
 foreach ($t in $tarefas) {
     "[$(Get-Date -Format s)] RENDER $($t.Cena)" | Out-File -FilePath $log -Append -Encoding utf8
-    & .\.venv\Scripts\python.exe -m manim -ql --media_dir media_dev_fluxo $t.Arquivo $t.Cena *>> $log
+    & $py -m manim -ql --media_dir build\media-fluxo $t.Arquivo $t.Cena *>> $log
     "[$(Get-Date -Format s)] FIM $($t.Cena) exit=$LASTEXITCODE" | Out-File -FilePath $log -Append -Encoding utf8
 }
 
