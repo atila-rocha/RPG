@@ -42,8 +42,9 @@ COR_PESO_ACEITO = "#f2f4f8"
 # relaxadas (`COR_ANALISE`) nem com o verde das arestas aceitas.
 COR_EXTRACAO = "#e879f9"
 
-# Entrada repetida no `pq` da IndexMinPQ (o `contains` do algs4 é
-# `index in self.keys`, então o mesmo vértice pode ser inserido duas vezes).
+# Entrada repetida no `pq` da IndexMinPQ. Com o `contains` atual (baseado em
+# `qp`, como no Java) o mesmo vértice entra uma única vez; a cor fica como
+# marcação de slot repetido caso o heap alguma vez mostre duas cópias.
 # Laranja fica longe do magenta da extração e do amarelo "em análise".
 COR_REPETIDO = "#f9844a"
 
@@ -1281,9 +1282,10 @@ class AbaHeap:
         ordem = est.get("pq_ordem", [])
         chaves = est.get("ipq_keys", {})
         marcados = set(est.get("marcados", []))
-        # Uma entrada por SLOT. Quando o `contains` do algs4 falha, o mesmo
-        # vértice aparece mais de uma vez em `pq.pq`; marcamos as duas cópias
-        # para o aluno ver que a repetição é do estado real, não do desenho.
+        # Uma entrada por SLOT: o painel reflete a posição física em `pq.pq`.
+        # Com o `contains` atual cada vértice aparece uma vez; se o mesmo
+        # vértice surgir duas vezes, as cópias são marcadas para o aluno ver
+        # que a repetição é do estado real, não do desenho.
         contagem: dict[int, int] = {}
         for v in ordem:
             contagem[v] = contagem.get(v, 0) + 1

@@ -255,7 +255,17 @@ LINHAS_DIJKSTRA = {
     38, 39, 40, 41, 42, 43, 44, 45, 46,
     48, 49, 50, 51, 52, 53, 54, 55, 57,
 }
-LINHAS_IPQ = {4, 5, 6, 9, 10, 11, 12, 13, 21, 46, 47, 48, 49, 51, 52, 55, 60, 61, 62, 64, 66, 67, 69, 70, 71, 72, 74, 75, 77, 78}
+LINHAS_IPQ = {
+    13, 14, 16, 17, 18, 19,          # __init__
+    21, 22,                          # is_empty
+    31, 32, 33,                      # contains
+    35, 36, 38, 39, 40, 41, 42,      # insert
+    57, 58, 60, 61, 62,              # change
+    64, 65, 67, 69, 70,              # decrease_key
+    80, 81, 83, 84, 85, 86, 87, 88, 89,  # del_min
+    115, 116, 117, 118,              # swim
+    120, 121, 123, 124, 125, 126, 128, 129, 131, 132,  # sink
+}
 LINHAS_ARESTA = {19, 20}
 
 NOMES_VIEWS = {
@@ -320,9 +330,9 @@ def testar_detalhado() -> None:
             )
 
     # Linha 48 é o `def relax` (não gera evento de linha na chamada) e a 55 é
-    # o `pq.change`, ramo que não executa no tinyEWD porque o `contains` do
-    # algs4 sempre devolve False. A view de `relax` mostra a 48; o painel
-    # continua fiel ao caminho real (insert na 57).
+    # o `pq.change`: no tinyEWD nenhum vértice é relaxado depois de já estar
+    # na fila, então o ramo não executa. A view de `relax` mostra a 48; o
+    # painel continua fiel ao caminho real (insert na 57).
     for linha in LINHAS_DIJKSTRA - {48, 55}:
         verificar(
             ("algs4.dijkstra_sp", linha) in vistos,

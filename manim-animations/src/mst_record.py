@@ -14,10 +14,11 @@ Consequências:
 - o número de linha do destaque é o `frame.f_lineno` real;
 - o painel mostra `frame.f_locals` real, não um snapshot digitado à mão.
 
-Decisão registrada no plano: gravamos o `algs4` exatamente como está,
-inclusive o comportamento de `IndexMinPQ.contains`. O painel da IPQ é
-derivado de `distTo`/`marked` (um item por vértice), então a tela nunca
-exibe entradas repetidas do heap.
+O `IndexMinPQ` segue a lógica do `algs4-java`: `contains` lê o vetor
+inverso `qp`, então cada vértice tem no máximo uma entrada na fila e
+`decrease_key` roda quando uma aresta melhora a prioridade de um vértice
+que já está nela. O painel da IPQ é derivado do heap real (`pq.pq`) e das
+chaves reais (`keys`).
 """
 
 from __future__ import annotations
@@ -301,6 +302,9 @@ def _instantanea_aux(obj: Any) -> dict:
     keys = getattr(obj, "keys", None)
     if keys is not None:
         d["keys"] = list(keys)
+    qp = getattr(obj, "qp", None)
+    if qp is not None:
+        d["qp"] = list(qp)
     return d
 
 
@@ -710,11 +714,11 @@ def passos_eager() -> list[Step]:
 
         v = ev["v"]
 
-        # O `IndexMinPQ.contains` do algs4 faz `index in self.keys`, então o
-        # `insert(5, 5)` cria uma segunda entrada para o vértice 5. O último
-        # `del_min()` devolve 5 de novo, quando ele já está na árvore: a
-        # extração não altera estado nenhum. Gravamos como está, mas não
-        # renderizamos um passo que não muda nada.
+        # O `IndexMinPQ.contains` lê o vetor inverso `qp` (como no Java);
+        # o Prim só chega ao `insert` quando o vértice ainda não está na
+        # fila. A extração duplicada que existia com o `contains` baseado
+        # em `keys` não acontece mais; os filtros abaixo ficam como
+        # proteção histórica e não encontram nada a pular.
         marcados_no_evento = ev["self"].get("marked", [])
         if v is not None and 0 <= v < len(marcados_no_evento) and marcados_no_evento[v]:
             continue
@@ -934,8 +938,10 @@ def _marcar_inserts_duplicados(passos: list[Step]) -> None:
 
     O passo da chamada `pq.insert(w, ...)` é gravado ANTES de o `append`
     rodar, então o estado dele ainda mostra uma entrada só. Basta olhar os
-    passos seguintes (o `append` e o `swim`): se `w` passa a aparecer mais de
-    uma vez em `pq.pq`, a causa é o `contains` do algs4.
+    passos seguintes (o `append` e o `swim`): se `w` passa a aparecer mais
+    de uma vez em `pq.pq`, a marcação entra. Com o `contains` baseado em
+    `qp` (como no Java) a duplicata não acontece; a função é rede de
+    segurança para o trace e não altera nada no caso normal.
     """
     for i, p in enumerate(passos):
         if not (p.destaque and p.destaque[0] == "relax" and p.destaque[3] == "insert"):
@@ -1068,48 +1074,38 @@ def _descrever_auxiliar(ev: dict, proximo: dict, estado: dict) -> tuple[str, tup
 
     if funcao == "IndexMinPQ.insert":
         i = locais.get("i")
-        ordem = estado.get("pq_ordem", [])
-        duplicado = i is not None and ordem.count(i) > 1
-        if linha == 9:
-            if duplicado:
-                return (
-                    f"self.pq.append({i}): ATENÇÃO — {i} entra de novo; "
-                    f"agora há 2 entradas",
-                    SEM_DESTAQUE,
-                    PAUSA_MEDIA,
-                )
+        if linha == 36:
+            return f"pq.contains({i})? o vértice já está na fila?", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 38:
             return f"self.pq.append({i}): vértice entra na IPQ", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 10:
-            n = (proximo.get("locais") or {}).get("n")
-            return f"n = len(pq) - 1 = {n}: posição no heap", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 11:
-            return f"self.qp[{i}] = n: guarda a posição do vértice", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 12:
+        if linha == 39:
+            k = (proximo.get("locais") or {}).get("k")
+            return f"k = len(pq) - 1 = {k}: posição no heap", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 40:
+            return f"self.qp[{i}] = k: guarda a posição do vértice", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 41:
             chave = ipq.get(i) if i in ipq else estado.get("distTo", [None] * 64)[i] if i is not None else None
             return f"self.keys[{i}] = {chave:g}: prioridade inicial", SEM_DESTAQUE, PAUSA_CURTA
-        return "self.swim(n): reposiciona o vértice no heap", SEM_DESTAQUE, PAUSA_CURTA
+        return "self.swim(k): reposiciona o vértice no heap", SEM_DESTAQUE, PAUSA_CURTA
 
     if funcao == "IndexMinPQ.contains":
         index = locais.get("index")
-        chaves = ev.get("aux", {}).get("keys") or []
-        achou = index is not None and index in chaves
-        tem_chave = (
-            index is not None and index < len(chaves) and chaves[index] is not None
-        )
+        if linha == 32:
+            return (
+                f"self._validar_indice({index}): 0 <= {index} < V?",
+                SEM_DESTAQUE,
+                PAUSA_CURTA,
+            )
+        qp = ev.get("aux", {}).get("qp") or []
+        dentro = index is not None and index < len(qp) and qp[index] != -1
         if index is None:
             resposta = ""
-        elif achou:
-            resposta = f"True → achou o valor {index} na lista"
-        elif tem_chave:
-            # O código real é `index in self.keys`: testa se EXISTE um valor
-            # igual ao índice, não se `keys[index]` está preenchido. Aqui
-            # `keys[3]` existe (0.29), mas `3 in keys` é False — daí o
-            # `insert` repetido e o vértice duplicado no heap.
-            resposta = f"False → keys[{index}] existe, mas a busca é por valor"
+        elif dentro:
+            resposta = f"True → qp[{index}] = {qp[index]}: está no heap"
         else:
-            resposta = "False → vértice ainda não inserido"
+            resposta = f"False → qp[{index}] = -1: fora do heap"
         return (
-            f"return {index} in self.keys: {resposta}".rstrip(),
+            f"return self.qp[{index}] != -1: {resposta}".rstrip(),
             SEM_DESTAQUE,
             PAUSA_CURTA,
         )
@@ -1117,28 +1113,34 @@ def _descrever_auxiliar(ev: dict, proximo: dict, estado: dict) -> tuple[str, tup
     if funcao == "IndexMinPQ.decrease_key":
         i = locais.get("i")
         chave = locais.get("key")
-        if linha == 34:
+        if linha == 65:
+            return f"pq.contains({i})? o vértice está na IPQ?", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 67:
             return (
                 f"if keys[{i}] <= {chave:g}: o novo valor é menor?",
                 SEM_DESTAQUE,
                 PAUSA_CURTA,
             )
-        if linha == 36:
+        if linha == 69:
             return f"self.keys[{i}] = {chave:g}: atualiza a prioridade", SEM_DESTAQUE, PAUSA_CURTA
         return "self.swim(qp[i]): sobe o vértice no heap", SEM_DESTAQUE, PAUSA_CURTA
 
     if funcao == "IndexMinPQ.del_min":
         m = locais.get("m")
-        if linha == 46:
+        if linha == 81:
+            return "if not pq: a fila está vazia?", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 83:
             return "m = self.pq[0]: vértice de menor distância", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 47:
+        if linha == 84:
             return "troca o topo com o último item do heap", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 48:
-            return "self.pq = self.pq[:-1]: remove o último item", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 49:
+        if linha == 85:
+            return "self.pq.pop(): remove o último item", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 86:
             return "self.sink(0): restaura a propriedade do heap", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 51:
+        if linha == 87:
             return f"self.qp[{m}] = -1: o vértice sai da IPQ", SEM_DESTAQUE, PAUSA_CURTA
+        if linha == 88:
+            return f"self.keys[{m}] = None: libera a prioridade antiga", SEM_DESTAQUE, PAUSA_CURTA
         return f"return m: devolve o vértice {m}", SEM_DESTAQUE, PAUSA_MEDIA
 
     if funcao == "IndexMinPQ.is_empty":
@@ -1152,42 +1154,42 @@ def _descrever_auxiliar(ev: dict, proximo: dict, estado: dict) -> tuple[str, tup
     # -- IndexMinPQ.swim / IndexMinPQ.sink (reordenação interna do heap) ---
 
     if funcao == "IndexMinPQ.swim":
-        if linha == 61:
+        if linha == 116:
             k = locais.get("k")
             return (
                 f"while k={k} > 0 e pai > chave(k): o vértice sobe?",
                 SEM_DESTAQUE,
                 PAUSA_CURTA,
             )
-        if linha == 64:
+        if linha == 118:
             return "k = (k-1)//2: sobe para a posição do pai", SEM_DESTAQUE, PAUSA_CURTA
         return "troca o vértice com o pai no heap", SEM_DESTAQUE, PAUSA_CURTA
 
     if funcao == "IndexMinPQ.sink":
-        if linha == 67:
+        if linha == 121:
             n = (proximo.get("locais") or {}).get("N")
             return (
                 f"N = len(pq) = {n}: tamanho atual do heap",
                 SEM_DESTAQUE,
                 PAUSA_CURTA,
             )
-        if linha == 69:
+        if linha == 123:
             return "while 2k+1 <= N-1: enquanto houver filho esquerdo", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 70:
+        if linha == 124:
             return (
                 f"j = 2k+1 = {locais.get('j')}: posição do filho esquerdo",
                 SEM_DESTAQUE,
                 PAUSA_CURTA,
             )
-        if linha == 71:
+        if linha == 125:
             return "if j < N-1 e greater(j, j+1): filho direito menor?", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 72:
+        if linha == 126:
             return "j += 1: escolhe o filho menor (direito)", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 74:
+        if linha == 128:
             return "if not greater(k, j): o pai já é o menor?", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 75:
+        if linha == 129:
             return "break: o heap já está ok", SEM_DESTAQUE, PAUSA_CURTA
-        if linha == 77:
+        if linha == 131:
             return "troca pq[k] com pq[j]: o pai desce", SEM_DESTAQUE, PAUSA_CURTA
         return "k = j: continua descendo", SEM_DESTAQUE, PAUSA_CURTA
 
@@ -1565,13 +1567,13 @@ def _descrever_eager(ev: dict, depois: dict, estado: dict) -> tuple[str, tuple, 
 
 
 def _ignorar_duplicado_eager(eventos: list[dict]) -> set[int]:
-    """Remove o bloco da extração duplicada do vértice 5.
+    """Remove um eventual bloco de extração duplicada (rede de segurança).
 
-    `IndexMinPQ.contains` do algs4 devolve True para qualquer índice já
-    visto (o `keys[i]` nunca volta a None), então `insert(5, 5)` cria uma
-    segunda entrada para o 5. O `del_min` extra não muda estado nenhum.
-    Gravamos o `algs4` como está, mas não animamos esse laço: ele não
-    ensina nada e só repetiria linhas sem efeito.
+    Com o `contains` antigo (baseado em `keys`), `insert(5, 5)` criava uma
+    segunda entrada para o vértice 5 e o `del_min` o extraía de novo já na
+    árvore. Hoje o `contains` lê o vetor inverso `qp`, como no Java, e o
+    Prim não insere duplicatas: a função não encontra nada para pular.
+    Fica porque o roteiro não pode quebrar se um grafo estranho repetir.
     """
     modulo = "algs4.prim_mst"
     funcao = "PrimMST.prim"

@@ -509,14 +509,14 @@ def coletar_detalhado() -> list[Step]:
         destaque = SEM_DESTAQUE
         pausa = PAUSA_CURTA
 
-        # A extração acontece no `return m` do del_min (linha 52).
+        # A extração acontece no `return m` do del_min (linha 89).
         m = loc.get("m")
         if m is None and funcao == "IndexMinPQ.del_min":
             # Na linha 46 (`m = pq[0]`) o `m` ainda não está em f_locals; o
             # valor real aparece no evento seguinte. Sem isso a narração
             # mostrava "m = ?" nos dois primeiros passos do del_min.
             m = _valor_futuro(eventos, idx, "m")
-        if funcao == "IndexMinPQ.del_min" and linha == 52 and m is not None:
+        if funcao == "IndexMinPQ.del_min" and linha == 89 and m is not None:
             marcados.add(int(m))
 
         # O vértice ativo é o argumento do relax em execução.
@@ -631,47 +631,57 @@ def coletar_detalhado() -> list[Step]:
 
         # --- IndexMinPQ.__init__ -------------------------------------
         elif funcao == "IndexMinPQ.__init__":
-            if linha == 4:
-                acao = "IndexMinPQ.__init__: pq = [] (heap vazio)"
-            elif linha == 5:
+            if linha == 14:
+                acao = "IndexMinPQ.__init__: a capacidade max_n é válida?"
+            elif linha == 16:
+                acao = f"self.max_n = {V_CANONICO}: capacidade da fila indexada"
+            elif linha == 17:
+                acao = "pq = []: heap vazio"
+            elif linha == 18:
                 acao = "qp = [-1] * V: posição de cada vértice no heap"
-            elif linha == 6:
+            elif linha == 19:
                 acao = "keys = [None] * V: prioridade real de cada vértice"
             pausa = PAUSA_CURTA
 
         # --- IndexMinPQ.insert ---------------------------------------
         elif funcao == "IndexMinPQ.insert":
             i = loc.get("i")
-            n = _valor_futuro(eventos, idx, "n")
+            k = _valor_futuro(eventos, idx, "k")
             item = _valor_futuro(eventos, idx, "item")
-            if linha == 9:
+            if linha == 36:
+                acao = f"pq.contains({i})? já existe entrada para {i}?"
+            elif linha == 38:
                 acao = f"self.pq.append({i}): {i} entra no fim do heap"
-            elif linha == 10:
-                acao = f"n = len(pq) - 1 = {n}: posição do novo item"
-            elif linha == 11:
-                acao = f"qp[{i}] = {n}: registra onde {i} está no heap"
-            elif linha == 12:
+            elif linha == 39:
+                acao = f"k = len(pq) - 1 = {k}: posição do novo item"
+            elif linha == 40:
+                acao = f"qp[{i}] = {k}: registra onde {i} está no heap"
+            elif linha == 41:
                 acao = f"keys[{i}] = {_fmt(item)}: guarda a prioridade de {i}"
-            elif linha == 13:
-                acao = f"swim({n}): sobe {i} até restaurar a ordem do min-heap"
+            elif linha == 42:
+                acao = f"swim({k}): sobe {i} até restaurar a ordem do min-heap"
                 pausa = PAUSA_MEDIA
 
         # --- IndexMinPQ.change ---------------------------------------
         elif funcao == "IndexMinPQ.change":
             i = loc.get("i")
             item = loc.get("item")
-            if linha == 16:
+            if linha == 58:
+                acao = f"pq.contains({i})? o vértice já está na IPQ?"
+            elif linha == 60:
                 acao = f"keys[{i}] = {_fmt(item)}: atualiza a prioridade"
-            elif linha == 17:
-                acao = f"sink(qp[{i}]): desce o item, pois a chave diminuiu"
-            elif linha == 18:
-                acao = f"swim(qp[{i}]): garante a subida se necessário"
+            elif linha == 61:
+                acao = f"swim(qp[{i}]): se a chave diminuiu, sobe no heap"
+            elif linha == 62:
+                acao = f"sink(qp[{i}]): garante a descida se necessário"
             pausa = PAUSA_MEDIA
 
         # --- IndexMinPQ.contains -------------------------------------
         elif funcao == "IndexMinPQ.contains":
             index = loc.get("index")
-            if linha == 21:
+            if linha == 32:
+                acao = f"self._validar_indice({index}): 0 <= {index} < V?"
+            elif linha == 33:
                 ramo = next(
                     (
                         ev2["lineno"]
@@ -682,22 +692,29 @@ def coletar_detalhado() -> list[Step]:
                     None,
                 )
                 resp = "true" if ramo == 55 else "false" if ramo == 57 else "?"
-                acao = f"return {index} in keys → {resp}: {index} {'está' if resp == 'true' else 'não está'} na IPQ"
+                acao = (
+                    f"return qp[{index}] != -1 → {resp}: "
+                    f"{index} {'está' if resp == 'true' else 'não está'} na IPQ"
+                )
                 pausa = PAUSA_MEDIA
 
         # --- IndexMinPQ.del_min --------------------------------------
         elif funcao == "IndexMinPQ.del_min":
-            if linha == 46:
+            if linha == 81:
+                acao = "if not pq: a fila está vazia?"
+            elif linha == 83:
                 acao = f"m = pq[0] = {_fmt(m)}: a raiz é o vértice de menor distância"
-            elif linha == 47:
+            elif linha == 84:
                 acao = "troca a raiz com o último item do heap"
-            elif linha == 48:
-                acao = "pq = pq[:-1]: remove o último item (a raiz antiga)"
-            elif linha == 49:
+            elif linha == 85:
+                acao = "pq.pop(): remove o último item (a raiz antiga)"
+            elif linha == 86:
                 acao = "sink(0): desce o novo topo até restaurar o min-heap"
-            elif linha == 51:
+            elif linha == 87:
                 acao = f"qp[{_fmt(m)}] = -1: marca {_fmt(m)} como fora da IPQ"
-            elif linha == 52:
+            elif linha == 88:
+                acao = f"keys[{_fmt(m)}] = None: libera a prioridade antiga"
+            elif linha == 89:
                 dv = dist_to[m] if isinstance(m, int) and m < len(dist_to) else None
                 acao = f"return m={_fmt(m)}: vértice {_fmt(m)} extraído com distTo {_fmt(dv)}"
                 destaque = ("vertice", m, None, "extraido")
@@ -705,7 +722,7 @@ def coletar_detalhado() -> list[Step]:
 
         # --- IndexMinPQ.is_empty -------------------------------------
         elif funcao == "IndexMinPQ.is_empty":
-            if linha == 55:
+            if linha == 22:
                 vazio = not estado.get("pq_ordem")
                 acao = f"return not pq → {vazio}: a fila {'está vazia' if vazio else 'ainda tem itens'}"
 
@@ -714,13 +731,13 @@ def coletar_detalhado() -> list[Step]:
             k = loc.get("k")
             if k is None:
                 k = _valor_futuro(eventos, idx, "k")
-            if linha == 60:
+            if linha == 115:
                 acao = f"def swim(k={_fmt(k)}): restaura a ordem subindo o item"
-            elif linha == 61:
+            elif linha == 116:
                 acao = f"while k>0 e pai > filho: {_fmt(k)} precisa subir no heap"
-            elif linha == 62:
+            elif linha == 117:
                 acao = "troca o item com o pai"
-            elif linha == 64:
+            elif linha == 118:
                 acao = "k = (k - 1) // 2: sobe um nível"
             pausa = PAUSA_CURTA
 
@@ -729,25 +746,25 @@ def coletar_detalhado() -> list[Step]:
             k = loc.get("k")
             if k is None:
                 k = _valor_futuro(eventos, idx, "k")
-            if linha == 66:
+            if linha == 120:
                 acao = f"def sink(k={_fmt(k)}): restaura a ordem descendo o item"
-            elif linha == 67:
+            elif linha == 121:
                 N = _valor_futuro(eventos, idx, "N")
                 acao = f"N = len(pq) = {_fmt(N)}: tamanho atual do heap"
-            elif linha == 69:
+            elif linha == 123:
                 acao = f"while 2k+1 <= N-1: o item k tem filho no heap?"
-            elif linha == 70:
+            elif linha == 124:
                 j = _valor_futuro(eventos, idx, "j")
                 acao = f"j = 2k+1 = {_fmt(j)}: filho esquerdo de {_fmt(k)}"
-            elif linha == 71:
+            elif linha == 125:
                 acao = "if filho direito < filho esquerdo: escolhe o menor filho (j += 1)"
-            elif linha == 72:
+            elif linha == 126:
                 acao = "j += 1: o menor filho é o direito"
-            elif linha == 74:
+            elif linha == 128:
                 acao = "if pai <= menor filho: a ordem está restaurada (break)"
-            elif linha == 75:
+            elif linha == 129:
                 acao = "break: o heap já está ordenado"
-            elif linha in (77, 78):
+            elif linha in (131, 132):
                 acao = "troca pai e filho; k = j: desce um nível"
             pausa = PAUSA_CURTA
 

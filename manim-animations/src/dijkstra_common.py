@@ -701,9 +701,10 @@ class AbaHeap(AbaBase):
     entradas do heap, então `swim` (sobe) e `sink` (desce) aparecem como
     movimento real na árvore.
 
-    A chave de cada nó é `(vértice, ocorrência)`: o `contains` do algs4 pode
-    deixar o mesmo vértice entrar duas vezes (bug real da biblioteca) e a
-    segunda cópia não pode sobrescrever a primeira.
+    A chave de cada nó é `(vértice, ocorrência)` para tolerar repetição: com
+    o `contains` antigo (baseado em `keys`), o mesmo vértice podia entrar duas
+    vezes. Hoje ele lê `qp`, como no Java, e cada vértice aparece uma vez;
+    o par (vértice, ocorrência) mantém o painel indexado por slot físico.
     """
 
     CAPTION = "IndexMinPQ · heap binário em slots · raiz = menor chave · ○ slot vazio"

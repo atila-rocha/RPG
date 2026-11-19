@@ -337,11 +337,9 @@ def invariante_eager(passos: list[rec.Step]) -> None:
             )
 
         # A ordem física do heap (`pq_ordem`) refere-se a vértices reais.
-        # Ela PODE repetir um índice: o `IndexMinPQ.contains` do algs4 é
-        # `index in self.keys`, comparando o índice com as CHAVES (pesos).
-        # No tinyEWG todos os pesos são < 1, então `contains` dá False, o
-        # Prim insere duplicatas e nunca chama `decrease_key` — é o
-        # comportamento real da biblioteca, e a animação o mostra.
+        # O `IndexMinPQ.contains` lê o vetor inverso `qp`, como no Java:
+        # cada vértice tem no máximo uma entrada, e `decrease_key` roda
+        # quando uma aresta melhora a prioridade de um vértice já na fila.
         ordem = estado.get("pq_ordem", [])
         for v in ordem:
             verificar(
@@ -422,9 +420,9 @@ def testar_determinismo() -> None:
 LINHAS_OBRIGATORIAS = {
     "kruskal": {48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63},
     "lazy": {57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 72, 73, 74, 75},
-    # O ramo `if contains(7)` (linha 71) não executa no tinyEWG: `contains`
-    # compara índice com pesos (< 1) e sempre dá False. A linha 70
-    # (`insert`) executa; a 73 (`del_min`) continua sendo o fecho do laço.
+    # O ramo `if contains(7)` (linha 71) não executa no tinyEWG: o vértice 7
+    # não é relaxado de novo depois de entrar na fila. A linha 70 (`insert`)
+    # executa; a 73 (`del_min`) continua sendo o fecho do laço.
     "eager": {55, 56, 57, 58, 59, 62, 63, 64, 65, 66, 67, 68, 69, 70, 73},
 }
 
@@ -618,11 +616,11 @@ def testar_funcoes() -> None:
                 )
                 usadas.add((view.modulo, view.nome))
 
-        # Nem toda view do painel executa em TODO grafo. No tinyEWG, por
-        # exemplo, `IndexMinPQ.decrease_key` nunca roda (o `contains` do
-        # algs4 sempre dá False). Exigimos que nada seja inventado
-        # (`usadas <=` painel) e que TODAS as views do módulo principal
-        # executem — são as que narram o algoritmo de fato.
+        # Nem toda view do painel executa em TODO grafo. No tinyEWD, por
+        # exemplo, `IndexMinPQ.change` nunca roda: nenhum vértice é
+        # relaxado depois de já estar na fila. Exigimos que nada seja
+        # inventado (`usadas <=` painel) e que TODAS as views do módulo
+        # principal executem — são as que narram o algoritmo de fato.
         verificar(
             usadas <= NOMES_VIEWS[nome],
             f"{nome}: views usadas fora do painel: {sorted(usadas - NOMES_VIEWS[nome])}",
