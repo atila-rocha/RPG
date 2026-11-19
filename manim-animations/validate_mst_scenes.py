@@ -106,15 +106,15 @@ GOLDEN_EAGER = [
     ("vertice", 7, None, "extraido"),
     ("relax", 7, 1, "insert"),
     ("relax", 7, 5, "insert"),
-    ("relax", 7, 4, "insert"),
+    ("relax", 7, 4, "decrease_key"),
     ("vertice", 1, None, "extraido"),
     ("relax", 1, 3, "insert"),
     ("vertice", 2, None, "extraido"),
-    ("relax", 2, 6, "insert"),
-    ("relax", 2, 3, "insert"),
-    ("vertice", 5, None, "extraido"),
-    ("relax", 5, 4, "insert"),
+    ("relax", 2, 6, "decrease_key"),
+    ("relax", 2, 3, "decrease_key"),
     ("vertice", 3, None, "extraido"),
+    ("vertice", 5, None, "extraido"),
+    ("relax", 5, 4, "decrease_key"),
     ("vertice", 4, None, "extraido"),
     ("vertice", 6, None, "extraido"),
     ("fim", None, None, None),
@@ -272,7 +272,7 @@ def testar_golden() -> None:
     verificar(eager[-1].estado["ipq"] == {}, "IPQ final não está vazia")
 
     ordem_del_min = [p.destaque[1] for p in eager if p.destaque[3] == "extraido"]
-    verificar(ordem_del_min == [0, 7, 1, 2, 5, 3, 4, 6], f"ordem del_min do Eager: {ordem_del_min}")
+    verificar(ordem_del_min == [0, 7, 1, 2, 3, 5, 4, 6], f"ordem del_min do Eager: {ordem_del_min}")
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +637,10 @@ def testar_funcoes() -> None:
 def exportar_stages() -> None:
     """Grava o índice de passos usado na comparação antes/depois (§8.2).
 
-    O `stages.json` versionado é do grafo padrão (tinyEWG). Com `MST_GRAFO`
+    O `stages.json` de referência é do grafo padrão (tinyEWG). Com `MST_GRAFO`
     apontando para outro arquivo, o índice vai para um arquivo ao lado, para
-    não sobrescrever a referência do grafo padrão.
+    não sobrescrever a referência do grafo padrão. Fica em `build/goldens/`
+    (descartável e regenerável), conforme as convenções do README.
     """
     import json
 
@@ -647,7 +648,7 @@ def exportar_stages() -> None:
     ativo = rec.caminho_grafo()
     padrao = ativo.resolve() == rec.GRAFO_PADRAO.resolve()
     nome_arquivo = "stages.json" if padrao else f"stages_{ativo.stem}.json"
-    destino = raiz / "media_corrigido" / nome_arquivo
+    destino = raiz / "build" / "goldens" / nome_arquivo
     destino.parent.mkdir(parents=True, exist_ok=True)
 
     dados = {}
