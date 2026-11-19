@@ -1,19 +1,21 @@
-# conteúdo local, planos, especificações e configurações de ferramentas
+# ambientes, segredos e configuracao local
 /.interno/
 /.codex/
 /.vscode/
 /AGENTS.md
-
-# ambientes, segredos e arquivos do sistema
 /.venv/
 .env
 .DS_Store
 
-# caches e artefatos gerados
+# caches e artefatos de build
 __pycache__/
 *.py[cod]
 /build/
 *.class
+
+# IntelliJ
+.idea/
+*.iml
 
 # datasets oficiais grandes do algs4
 /dataset/largeG.txt
@@ -21,3 +23,19 @@ __pycache__/
 /dataset/largeEWG.txt
 /dataset/largeEWD.txt
 /dataset/largeUF.txt
+
+# ---------------------------------------------------------------
+# manim-animations: versiona codigo, docs e scripts; nunca video,
+# cache de Tex nem diretorio de render.
+# ---------------------------------------------------------------
+manim-animations/.venv/
+manim-animations/build/
+manim-animations/media/
+manim-animations/media_*/
+manim-animations/qa_*/
+**/partial_movie_files/
+manim-animations/**/texts/
+
+# video e artefato binario de render ficam fora do git (ver
+# manim-animations/entregas/README.md para como regenerar)
+*.mp4
