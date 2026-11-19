@@ -1,0 +1,33 @@
++--------------------------------------------------------------------------------------------------+
+|                          Prim Eager: execução linha a linha (IndexMinPQ de vértices)             |
++--------------------------------------------------------------------------------------------------+
+| Guia visual                                                                                      |
+| ● aresta mantida na MST (edgeTo)                ● nó retirado da IndexMinPQ (em processamento)   |
+| ● aresta sob atualização/análise                ◯ vértice ainda não visitado                     |
+| ● aresta descartada (distância maior)           ◯ vértice já finalizado na MST                   |
++--------------------------------------------------+-----------------------------------------------+
+| PrimEager.visit · algs4/prim.py:30-42            |                    (2)                        |
+| 30 def visit(G, v):                              |             [0]----------[1]-------(7)------[3]|
+| 31     marked[v] = True                          |              | \        / |                 / |
+| 32     for e in G.adj(v):                        |              |  (4)  (1)  |              (2)  |
+| 33         w = e.other(v)                        |             (4)   \  /    |              /    |
+| 34         if marked[w]: continue                |              |     [2]----(3)----[4]        (5)|
+| 35         if e.weight < distTo[w]:              |              |                   |         /  |
+| 36             distTo[w] = e.weight              |              +---------(6)-------+-------[5]   |
+| 37             edgeTo[w] = e                     |                                               |
+| 38             if pq.contains(w):                | Vértices na IndexMinPQ:                       |
+| 39                 pq.decreaseKey(w, distTo[w])  | [3: (cost 2)], [5: (cost 5)]                  |
+| 40             else:                             |                                               |
+| 41                 pq.insert(w, distTo[w])       |                                               |
++--------------------------------------------------+-----------------------------------------------+
+| Estrutura de Dados Interna (IndexMinPQ + Arrays) | Visitando vizinho de 4 -> nó 5 (peso 5)       |
+|                                                  |                                               |
+| Vetores de Estado por Vértice:                   | MST: 5 / 5 arestas  |  Custo: 13              |
+| +----------+------+------+------+------+------+------+                                           |
+| | Vértice  |  0   |  1   |  2   |  3   |  4   |  5   | IndexMinPQ: [3:2, 5:5]                    |
+| +----------+------+------+------+------+------+------+                                           |
+| | marked[] | True | True | True | True | True |False | Marcados: 0, 1, 2, 3, 4 | Pendentes: 5    |
+| | distTo[] |  0   |  2   |  1   |  2   |  3   |  5   |                                           |
+| | edgeTo[] |  -   | 0-1  | 1-2  | 4-3  | 2-4  | 3-5  |                                           |
+| +----------+------+------+------+------+------+------+                                           |
++--------------------------------------------------+-----------------------------------------------+

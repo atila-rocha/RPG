@@ -1,0 +1,1858 @@
+"""
+Linguagem visual compartilhada das cenas de fluxo máximo (tinyFN).
+
+Edmonds-Karp (BFS) e Ford-Fulkerson (DFS) usam este módulo. Tudo o que
+aparece na tela deriva do trace real (`flow_record`): fluxos, capacidades,
+residuais, fila/pilha, caminho, gargalo, corte e as views de código por
+função. Nenhum número é digitado à mão.
+
+Contrato: `PLANO_VISUAL_FLUXO.md` §1–§8. Este arquivo é autossuficiente (não
+importa `mst_common`/`dijkstra_common`): a paleta de fluxo tem papéis próprios.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from manim import *
+
+import flow_record as rec
+
+# ---------------------------------------------------------------------------
+# Paleta e superfícies (§3)
+# ---------------------------------------------------------------------------
+
+COR_FUNDO = "#0f111a"
+COR_PAINEL = "#151824"
+COR_NO = "#2b2d42"
+COR_BORDA_NO = "#8d99ae"
+COR_TEXTO = "#f2f4f8"
+COR_ACENTO = "#48cae4"
+COR_LINHA_TABELA = "#2a2f45"
+COR_CABECALHO = "#48cae4"
+
+# papel -> (hex, texto da legenda, símbolo)
+PALETA: dict[str, tuple[str, str, str]] = {
+    "fora": ("#8d99ae", "sem fluxo", "dot"),
+    "fluxo": ("#4cc9f0", "com fluxo", "dot"),
+    "saturada": ("#06d6a0", "saturada", "dot"),
+    "exame": ("#e879f9", "em exame", "dot"),
+    "caminho": ("#ffd166", "caminho", "dot"),
+    "reversa": ("#ef476f", "reversa (res. f)", "dash"),
+    "alcancado": ("#80ed99", "alcançado/lado S", "ring"),
+}
+
+ESTRUTURAIS = dict(
+    fundo=COR_FUNDO,
+    painel=COR_PAINEL,
+    no=COR_NO,
+    borda=COR_BORDA_NO,
+    texto=COR_TEXTO,
+    rotulo_no="#ffffff",
+)
+
+# Ordem do guia visual: 4 itens na primeira linha, 3 na segunda (§3).
+ORDEM_GUIA = ("fora", "fluxo", "saturada", "exame", "caminho", "reversa", "alcancado")
+
+# ---------------------------------------------------------------------------
+# Layout (§1)
+# ---------------------------------------------------------------------------
+
+CODIGO = dict(largura=7.86, altura=4.55, buff=0.55)
+ESTRUTURA = dict(centro=(-2.63, -2.58), largura=7.86, altura=2.28)
+# O plano pedia centro x=4.17; com 5.33 de largura a borda direita ia a 6.835,
+# 0.005 além do safe frame (6.83). Centro 4.165 fecha em 1.50..6.83.
+ESTADO = dict(centro=(4.165, -2.66), largura=5.33, altura=2.12)
+TITULO_X = 1.55
+
+# Área útil do desenho do grafo (folga 0.20 até a moldura do código e o guia).
+GRAFO_AREA = (1.63, -0.25, 6.79, 3.05)
+
+COORDS = {
+    0: (1.90, 1.40),  # s (origem)
+    1: (3.42, 2.78),
+    2: (3.42, 0.02),
+    3: (5.05, 2.62),
+    4: (5.05, 0.18),
+    5: (6.52, 1.40),  # t (sumidouro, = V-1)
+}
+RAIO_NO = 0.27
+RAIO_ANEL = 0.34
+BUFF_SETA = 0.30
+LARG_SETA = 3.2
+PONTA = 0.16
+
+# Ritmo (§8.1). `pausa` indexa pelo valor do gravador; nada é pulado.
+RITMO = dict(
+    play=0.18,
+    play_destaque=0.24,
+    fade=0.09,
+    pausa={0.55: 0.06, 1.0: 0.22, 1.7: 0.90},
+)
+
+# ---------------------------------------------------------------------------
+# Formatação e regras de cor
+# ---------------------------------------------------------------------------
+
+SEM_VALOR = "—"
+
+ARESTAS_REDE_SET = frozenset((u, v) for u, v, _c in rec.ARESTAS_REDE)
+
+
+def fmt_num(x) -> str:
+    """Número do trace em forma curta (`4.0` -> `4`, `2.5` -> `2.5`)."""
+    if x is None:
+        return SEM_VALOR
+    return f"{x:g}"
+
+
+def cor_destaque(passo) -> str:
+    """Cor da ação no painel de estado (§6)."""
+    tipo = passo.destaque[0]
+    if tipo == "busca":
+        return PALETA["exame"][0]
+    if tipo in ("caminho", "aumento", "valor"):
+        return PALETA["caminho"][0]
+    if tipo == "corte":
+        return PALETA["saturada"][0]
+    if tipo == "aresta":
+        return PALETA["fora"][0]
+    return ESTRUTURAIS["texto"]
+
+
+def dividir_acao(acao: str, limite: int = 44) -> tuple[str, str]:
+    """Quebra determinística da ação em duas linhas fixas (§6).
+
+    A maior ação tem 76 caracteres (6,68 unidades em fonte 12) e o painel tem
+    5,33. A quebra é no último espaço antes de `limite`; a segunda linha pode
+    ser mais curta, nunca maior que o resto.
+    """
+    if len(acao) <= limite:
+        return acao, ""
+    corte = acao.rfind(" ", 0, limite + 1)
+    if corte <= 0:
+        corte = limite
+    return acao[:corte], acao[corte + 1 :].strip()
+
+
+def fmt_caminho(caminho) -> str:
+    """`[(0,2),(2,4),(4,5)]` -> `0→2→4→5`."""
+    if not caminho:
+        return SEM_VALOR
+    nos = [caminho[0][0]] + [v for _u, v in caminho]
+    return "→".join(str(v) for v in nos)
+
+
+def fmt_fila(estado: dict) -> str:
+    fila = estado.get("fila") or []
+    return "fila [" + ", ".join(map(str, fila)) + "]" if fila else "fila []"
+
+
+def fmt_pilha(estado: dict) -> str:
+    pilha = estado.get("pilha") or []
+    return "pilha [" + ", ".join(map(str, pilha)) + "]" if pilha else "pilha []"
+
+
+def fmt_marcados(estado: dict) -> str:
+    marcados = estado.get("marcados") or []
+    return "marcados {" + (", ".join(map(str, marcados)) or "") + "}"
+
+
+def fmt_edge_to(estado: dict) -> str:
+    edge_to = estado.get("edge_to") or {}
+    itens = []
+    for v in sorted(edge_to):
+        u, w = edge_to[v]
+        anterior = w if u == v else u
+        itens.append(f"{v}←{anterior}")
+    return "edgeTo " + (" ".join(itens) if itens else SEM_VALOR)
+
+
+def fmt_contadores(estado: dict, max_iteracao: int) -> str:
+    """Faixa fixa do rodapé da estrutura (§5.4)."""
+    it = estado.get("iteracao") or 0
+    return (
+        f"it {it}/{max_iteracao} · |f| = {fmt_num(estado.get('valor'))}"
+        f" · inspeções {estado.get('inspecoes', 0)}"
+        f" · caminho {fmt_caminho(estado.get('caminho'))}"
+        f" · b = {fmt_num(estado.get('gargalo'))}"
+    )
+
+
+def arcos_de(u: int, v: int, arestas: set[tuple[int, int]]) -> tuple[str, tuple[int, int]]:
+    """Como o par `(u,v)` do destaque aparece na rede.
+
+    Se `(u,v)` é aresta do arquivo, o foco é a **direta**; se `(v,u)` é aresta,
+    o foco é a **reversa** (o trace nomeia a reversa pelo sentido do residual,
+    ex.: `(2,0)` para a reversa de `0→2`). Devolve `("direta"|"reversa"|"",
+    chave)`.
+    """
+    if (u, v) in arestas:
+        return "direta", (u, v)
+    if (v, u) in arestas:
+        return "reversa", (v, u)
+    return "", (u, v)
+
+
+# ---------------------------------------------------------------------------
+# Geometria: caixas, colisões e pontos de rótulo
+# ---------------------------------------------------------------------------
+
+
+def caixa(centro, largura: float, altura: float) -> tuple[float, float, float, float]:
+    """(xmin, ymin, xmax, ymax) de um retângulo centrado."""
+    cx, cy = float(centro[0]), float(centro[1])
+    return (cx - largura / 2, cy - altura / 2, cx + largura / 2, cy + altura / 2)
+
+
+def caixas_colidem(a, b, folga: float = 0.0) -> bool:
+    return not (
+        a[2] + folga <= b[0]
+        or b[2] + folga <= a[0]
+        or a[3] + folga <= b[1]
+        or b[3] + folga <= a[1]
+    )
+
+
+def segmento_cruza_caixa(p0, p1, box, margem: float = 0.0) -> bool:
+    """Liang–Barsky: o segmento p0→p1 toca o retângulo (com margem)?"""
+    xmin, ymin, xmax, ymax = box
+    xmin -= margem
+    ymin -= margem
+    xmax += margem
+    ymax += margem
+    dx = float(p1[0]) - float(p0[0])
+    dy = float(p1[1]) - float(p0[1])
+    t0, t1 = 0.0, 1.0
+    for p, q in (
+        (-dx, float(p0[0]) - xmin),
+        (dx, xmax - float(p0[0])),
+        (-dy, float(p0[1]) - ymin),
+        (dy, ymax - float(p0[1])),
+    ):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return False
+        else:
+            r = q / p
+            if p < 0:
+                if r > t1:
+                    return False
+                t0 = max(t0, r)
+            else:
+                if r < t0:
+                    return False
+                t1 = min(t1, r)
+    return t0 <= t1
+
+
+def caixa_dentro(box, area, margem: float = 0.0) -> bool:
+    return (
+        box[0] >= area[0] + margem
+        and box[1] >= area[1] + margem
+        and box[2] <= area[2] - margem
+        and box[3] <= area[3] - margem
+    )
+
+
+def ponto_na_aresta(u: int, v: int, t: float, desvio: float = 0.0):
+    """Ponto a fração `t` do segmento u→v, deslocado `desvio` na perpendicular."""
+    p0 = np.array([COORDS[u][0], COORDS[u][1], 0.0])
+    p1 = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+    d = p1 - p0
+    norma = np.linalg.norm(d)
+    perp = np.array([-d[1], d[0], 0.0]) / norma
+    return p0 + d * t + perp * desvio
+
+
+def amostras_reversa(u: int, v: int, n: int = 21):
+    """Polilinha amostrada do arco tracejado v→u (mesma geometria da cena)."""
+    p0 = np.array([COORDS[u][0], COORDS[u][1], 0.0])
+    p1 = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+    d = p1 - p0
+    norma = np.linalg.norm(d)
+    perp = np.array([-d[1], d[0], 0.0]) / norma
+    inicio = p1 - d / norma * (RAIO_NO + 0.10)
+    fim = p0 + d / norma * (RAIO_NO + 0.10)
+    arco = ArcBetweenPoints(inicio, fim, angle=-0.45).shift(perp * 0.15)
+    return [arco.point_from_proportion(i / (n - 1)) for i in range(n)]
+
+
+def posicao_rotulo(u: int, v: int, largura: float, altura: float, ocupados, nos, arcos):
+    """Posição do rótulo `f/C` (§2.3): centro → ao longo → perpendicular.
+
+    A ordem dos candidatos é fixa (determinística, ordem do arquivo). Conta
+    colisões contra nós, arestas alheias, arcos reversos alheios, rótulos já
+    postos e o limite da área útil. Devolve (centro, caixa, colisoes).
+    """
+    candidatos_t = (0.50, 0.44, 0.56, 0.38, 0.62, 0.32, 0.68, 0.26, 0.74)
+    desvios = (0.0, 0.16, -0.16, 0.22, -0.22, 0.28, -0.28)
+    melhor = None
+    for t in candidatos_t:
+        for desvio in desvios:
+            centro = ponto_na_aresta(u, v, t, desvio)
+            box = caixa(centro, largura, altura)
+            colisoes = 0
+            if not caixa_dentro(box, GRAFO_AREA, margem=0.02):
+                colisoes += 1
+            for no in nos:
+                if caixas_colidem(box, no, folga=0.06):
+                    colisoes += 1
+            for chave, outro in arcos.items():
+                if chave == (u, v):
+                    continue
+                for i in range(len(outro) - 1):
+                    if segmento_cruza_caixa(outro[i], outro[i + 1], box, margem=0.05):
+                        colisoes += 1
+                        break
+            for outra in ocupados:
+                if caixas_colidem(box, outra, folga=0.02):
+                    colisoes += 1
+            if melhor is None or colisoes < melhor[2]:
+                melhor = (centro, box, colisoes)
+            if colisoes == 0:
+                return centro, box, 0
+    return melhor
+
+
+# ---------------------------------------------------------------------------
+# Grafo: nós, arestas `f/C`, reversas tracejadas e foco (§2)
+# ---------------------------------------------------------------------------
+
+
+class FlowGraphView:
+    """Desenho do `tinyFN` dirigido por `Step.estado`.
+
+    - arestas diretas com rótulo `f/C` (fundo opaco abre o vão da linha);
+    - aresta reversa tracejada (`v→u`) só quando `f > 0`;
+    - nó em foco com anel magenta, alcançados com fill verde-claro;
+    - tudo por *diff*: num passo de bookkeeping o custo é zero ou um mobject.
+    """
+
+    def __init__(self, mostrar_rede: bool = False, estado_inicial: dict | None = None):
+        self.arestas_arquivo = {(u, v) for u, v, _c in rec.ARESTAS_REDE}
+        self.capacidade_arquivo = {(u, v): c for u, v, c in rec.ARESTAS_REDE}
+
+        self.arestas: dict[tuple[int, int], Arrow] = {}
+        self.fundos: dict[tuple[int, int], RoundedRectangle] = {}
+        self.textos: dict[tuple[int, int], Text] = {}
+        self.texto_atual: dict[tuple[int, int], str] = {}
+        self.cor_atual: dict[tuple[int, int], str] = {}
+        self.larg_atual: dict[tuple[int, int], float] = {}
+        self.presentes: set[tuple[int, int]] = set()
+
+        self.reversas: dict[tuple[int, int], VGroup] = {}
+        self.cor_reversa: dict[tuple[int, int], str] = {}
+
+        self.circulos: dict[int, Circle] = {}
+        self.rotulos_no: dict[int, Text] = {}
+        self.etiquetas_papel: dict[int, Text] = {}
+        self.aneis_papel: dict[int, Circle] = {}
+        self.aneis_corte: dict[int, Circle] = {}
+        self.fill_atual: dict[int, str] = {}
+
+        self.anel_foco = Circle(radius=RAIO_ANEL, color=PALETA["exame"][0], stroke_width=2.0)
+        self.anel_foco.set_stroke(opacity=0.0)
+        self.anel_foco.set_z_index(6)
+        # nasce em cima de s: invisível, mas o bbox do grupo não sai da área
+        self.anel_foco.move_to(
+            np.array([COORDS[rec.S_FONTE][0], COORDS[rec.S_FONTE][1], 0.0])
+        )
+        self.foco: int | None = None
+
+        self.rotulo_rev: VGroup | None = None
+        self.rotulo_rev_chave: tuple[int, int] | None = None
+
+        self.dim_rotulo: dict[tuple[int, int], tuple[float, float]] = {}
+        self.pos_rotulo: dict[tuple[int, int], np.ndarray] = {}
+        self.caixa_rotulo: dict[tuple[int, int], tuple] = {}
+        self.colisoes_rotulo: dict[tuple[int, int], int] = {}
+
+        self._montar_nos()
+        self._calcular_rotulos()
+
+        if mostrar_rede:
+            for u, v, c in rec.ARESTAS_REDE:
+                self._criar_aresta(u, v, c)
+                self.presentes.add((u, v))
+        if estado_inicial is not None:
+            self._aplicar_imediato(estado_inicial)
+
+        self.mobject = VGroup(
+            *self.arestas.values(),
+            *self.reversas.values(),
+            *self.fundos.values(),
+            *self.textos.values(),
+            *[self.circulos[v] for v in range(rec.V_REDE)],
+            *[self.rotulos_no[v] for v in range(rec.V_REDE)],
+            *self.etiquetas_papel.values(),
+            *[self.aneis_papel[v] for v in range(rec.V_REDE)],
+            *[self.aneis_corte[v] for v in range(rec.V_REDE)],
+            self.anel_foco,
+        )
+
+    # -- montagem ----------------------------------------------------------
+
+    def _montar_nos(self) -> None:
+        for v in range(rec.V_REDE):
+            pos = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+            circulo = Circle(
+                radius=RAIO_NO,
+                fill_color=COR_NO,
+                fill_opacity=1.0,
+                stroke_color=COR_BORDA_NO,
+                stroke_width=1.8,
+            ).move_to(pos)
+            circulo.set_z_index(4)
+            rotulo = Text(str(v), font_size=17, color=ESTRUTURAIS["rotulo_no"])
+            rotulo.move_to(pos).set_z_index(5)
+            self.circulos[v] = circulo
+            self.rotulos_no[v] = rotulo
+            self.fill_atual[v] = COR_NO
+
+            anel = Circle(radius=RAIO_ANEL, stroke_width=2.2).move_to(pos)
+            anel.set_stroke(opacity=0.0)
+            anel.set_z_index(5.5)
+            self.aneis_papel[v] = anel
+
+            corte = Circle(radius=RAIO_ANEL + 0.04, stroke_width=2.2).move_to(pos)
+            corte.set_stroke(opacity=0.0)
+            corte.set_z_index(5.7)
+            self.aneis_corte[v] = corte
+
+        for v, texto, cor in ((rec.S_FONTE, "s", PALETA["fluxo"][0]),
+                              (rec.T_SUMIDOURO, "t", PALETA["caminho"][0])):
+            self.aneis_papel[v].set_stroke(color=cor, width=2.2, opacity=1.0)
+            etiqueta = Text(texto, font_size=11, color=cor)
+            etiqueta.move_to(
+                np.array([COORDS[v][0] - 0.40, COORDS[v][1] + 0.34, 0.0])
+            ).set_z_index(5)
+            self.etiquetas_papel[v] = etiqueta
+
+    def _calcular_rotulos(self) -> None:
+        """Posições dos `f/C` calculadas UMA vez (§2.3), na ordem do arquivo."""
+        nos = [caixa(COORDS[v], 0.68, 0.68) for v in range(rec.V_REDE)]
+        arcos = {(u, v): amostras_reversa(u, v) for u, v, _c in rec.ARESTAS_REDE}
+        ocupados: list[tuple] = []
+        for u, v, c in rec.ARESTAS_REDE:
+            amostra = Text(f"{c:g}/{c:g}", font_size=13)
+            largura, altura = amostra.width + 0.10, amostra.height + 0.06
+            self.dim_rotulo[(u, v)] = (largura, altura)
+            centro, box, colisoes = posicao_rotulo(
+                u, v, largura, altura, ocupados, nos, arcos
+            )
+            self.pos_rotulo[(u, v)] = centro
+            self.caixa_rotulo[(u, v)] = box
+            self.colisoes_rotulo[(u, v)] = colisoes
+            ocupados.append(box)
+
+    def _criar_aresta(self, u: int, v: int, capacidade: float) -> None:
+        if (u, v) in self.arestas:
+            return
+        p0 = np.array([COORDS[u][0], COORDS[u][1], 0.0])
+        p1 = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+        seta = Arrow(
+            p0,
+            p1,
+            buff=BUFF_SETA,
+            stroke_width=LARG_SETA,
+            tip_length=PONTA,
+            color=PALETA["fora"][0],
+        )
+        seta.set_z_index(1)
+
+        largura, altura = self.dim_rotulo[(u, v)]
+        fundo = RoundedRectangle(
+            corner_radius=0.05,
+            width=largura,
+            height=altura,
+            fill_color=COR_FUNDO,
+            fill_opacity=1.0,
+            stroke_width=0.0,
+        ).move_to(self.pos_rotulo[(u, v)])
+        fundo.set_z_index(2.5)
+        texto = Text(f"0/{capacidade:g}", font_size=13, color=COR_TEXTO)
+        texto.move_to(fundo.get_center()).set_z_index(3)
+
+        self.arestas[(u, v)] = seta
+        self.fundos[(u, v)] = fundo
+        self.textos[(u, v)] = texto
+        self.texto_atual[(u, v)] = f"0/{capacidade:g}"
+        self.cor_atual[(u, v)] = PALETA["fora"][0]
+        self.larg_atual[(u, v)] = LARG_SETA
+
+    def _criar_reversa(self, u: int, v: int) -> VGroup:
+        """Arco tracejado v→u deslocado 0,15 na perpendicular (§2.4)."""
+        p0 = np.array([COORDS[u][0], COORDS[u][1], 0.0])
+        p1 = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+        d = p1 - p0
+        norma = np.linalg.norm(d)
+        perp = np.array([-d[1], d[0], 0.0]) / norma
+        inicio = p1 - d / norma * (RAIO_NO + 0.10)
+        fim = p0 + d / norma * (RAIO_NO + 0.10)
+        arco = ArcBetweenPoints(inicio, fim, angle=-0.45).shift(perp * 0.15)
+        tracejado = DashedVMobject(
+            arco,
+            num_dashes=14,
+            dashed_ratio=0.55,
+            color=PALETA["reversa"][0],
+            stroke_width=1.8,
+        )
+        a = arco.point_from_proportion(0.97)
+        b = arco.point_from_proportion(1.0)
+        direcao = b - a
+        ponta = Triangle(
+            color=PALETA["reversa"][0], fill_opacity=1.0, stroke_width=0.0
+        ).scale(0.055)
+        ponta.rotate(np.arctan2(direcao[1], direcao[0]) - PI / 2).move_to(b)
+        grupo = VGroup(tracejado, ponta)
+        grupo.set_z_index(2)
+        self.reversas[(u, v)] = grupo
+        self.cor_reversa[(u, v)] = PALETA["reversa"][0]
+        return grupo
+
+    def ponto_reversa(self, u: int, v: int, frac: float = 0.5, desloc: float = 0.16):
+        """Ponto no meio do arco reverso de `u→v`, fora dele (para rótulo)."""
+        amostras = amostras_reversa(u, v)
+        ponto = amostras[int(frac * (len(amostras) - 1))]
+        p0 = np.array([COORDS[u][0], COORDS[u][1], 0.0])
+        p1 = np.array([COORDS[v][0], COORDS[v][1], 0.0])
+        d = p1 - p0
+        perp = np.array([-d[1], d[0], 0.0]) / np.linalg.norm(d)
+        return ponto + perp * desloc
+
+    # -- destaques avulsos (introduções) -----------------------------------
+
+    def pintar(self, u: int, v: int, cor: str, largura: float = LARG_SETA):
+        """Pinta a aresta (direta ou reversa) e devolve a animação."""
+        lado, chave = arcos_de(u, v, self.arestas_arquivo)
+        if lado == "direta" and chave in self.arestas:
+            self.cor_atual[chave] = cor
+            self.larg_atual[chave] = largura
+            return self.arestas[chave].animate.set_color(cor).set_stroke(width=largura)
+        if lado == "reversa" and chave in self.reversas:
+            self.cor_reversa[chave] = cor
+            return self.reversas[chave].animate.set_color(cor)
+        return None
+
+    def flash(self, u: int, v: int, cor: str | None = None) -> Flash:
+        lado, _chave = arcos_de(u, v, self.arestas_arquivo)
+        ponto = (
+            self.ponto_reversa(u, v, 0.5, 0.0)
+            if lado == "reversa"
+            else ponto_na_aresta(u, v, 0.5)
+        )
+        return self._flash(ponto, cor or PALETA["exame"][0])
+
+    def rotulo_residual(self, chave: tuple[int, int], texto: str) -> VGroup:
+        """Rótulo `res = f` no meio do arco reverso da aresta `chave`."""
+        u, v = chave
+        return self._rotulo_com_fundo(
+            texto, self.ponto_reversa(u, v), 12, PALETA["reversa"][0]
+        )
+
+    def _rotulo_com_fundo(self, texto: str, centro, fonte: int, cor: str) -> VGroup:
+        t = Text(texto, font_size=fonte, color=cor)
+        fundo = RoundedRectangle(
+            corner_radius=0.05,
+            width=t.width + 0.10,
+            height=t.height + 0.06,
+            fill_color=COR_FUNDO,
+            fill_opacity=1.0,
+            stroke_width=0.0,
+        ).move_to(centro)
+        t.move_to(centro)
+        grupo = VGroup(fundo, t)
+        grupo.set_z_index(6)
+        return grupo
+
+    # -- troca de texto (nunca Transform de string) ------------------------
+
+    def _troca_texto(self, u: int, v: int, texto: str) -> Animation:
+        antigo = self.textos[(u, v)]
+        novo = Text(texto, font_size=13, color=COR_TEXTO)
+        novo.move_to(self.pos_rotulo[(u, v)]).set_z_index(3)
+        self.textos[(u, v)] = novo
+        self.texto_atual[(u, v)] = texto
+        return AnimationGroup(
+            FadeOut(antigo, run_time=RITMO["play"]),
+            FadeIn(novo, run_time=RITMO["play"]),
+        )
+
+    # -- estado imediato (introduções) -------------------------------------
+
+    def _aplicar_imediato(self, estado: dict) -> None:
+        """Constrói o desenho já no estado dado, sem animação (introduções)."""
+        for u, v, c in estado["arestas"]:
+            self._criar_aresta(u, v, c)
+            self.presentes.add((u, v))
+
+        for u, v in sorted(self.presentes):
+            fluxo = estado["fluxos"].get((u, v), 0.0)
+            cap = estado["capacidades"].get((u, v), 0.0)
+            papel = "fora" if fluxo <= 0 else ("saturada" if fluxo >= cap else "fluxo")
+            cor = PALETA[papel][0]
+            larg = LARG_SETA if papel == "fora" else 4.2
+            self.arestas[(u, v)].set_color(cor).set_stroke(width=larg)
+            self.cor_atual[(u, v)] = cor
+            self.larg_atual[(u, v)] = larg
+            texto = f"{fluxo:g}/{cap:g}"
+            if texto != self.texto_atual[(u, v)]:
+                novo = Text(texto, font_size=13, color=COR_TEXTO)
+                novo.move_to(self.pos_rotulo[(u, v)]).set_z_index(3)
+                self.textos[(u, v)] = novo
+                self.texto_atual[(u, v)] = texto
+
+        for u, v in sorted(self.presentes):
+            if estado["residual_reversa"].get((u, v), 0.0) > 0:
+                self._criar_reversa(u, v)
+
+        marcados = set(estado.get("marcados") or [])
+        for v in range(rec.V_REDE):
+            cor = PALETA["alcancado"][0] if v in marcados else COR_NO
+            self.circulos[v].set_fill(cor, opacity=1.0)
+            self.fill_atual[v] = cor
+
+    def aplicar(self, estado: dict, run_time: float = 0.4) -> list[Animation]:
+        """Leva o desenho ao estado dado, animando só o que muda."""
+        anims: list[Animation] = []
+        presentes = {(u, v) for u, v, _c in estado["arestas"]}
+        for u, v in sorted(presentes - self.presentes):
+            self._criar_aresta(u, v, estado["capacidades"][(u, v)])
+            self.presentes.add((u, v))
+            anims += [
+                FadeIn(self.arestas[(u, v)], run_time=run_time),
+                FadeIn(self.fundos[(u, v)], run_time=run_time),
+                FadeIn(self.textos[(u, v)], run_time=run_time),
+            ]
+
+        for u, v in sorted(self.presentes):
+            fluxo = estado["fluxos"].get((u, v), 0.0)
+            cap = estado["capacidades"].get((u, v), 0.0)
+            papel = "fora" if fluxo <= 0 else ("saturada" if fluxo >= cap else "fluxo")
+            cor = PALETA[papel][0]
+            larg = LARG_SETA if papel == "fora" else 4.2
+            if cor != self.cor_atual[(u, v)]:
+                self.arestas[(u, v)].set_color(cor)
+                self.cor_atual[(u, v)] = cor
+            if abs(larg - self.larg_atual[(u, v)]) > 1e-6:
+                self.arestas[(u, v)].set_stroke(width=larg)
+                self.larg_atual[(u, v)] = larg
+            texto = f"{fluxo:g}/{cap:g}"
+            if texto != self.texto_atual[(u, v)]:
+                anims.append(self._troca_texto(u, v, texto))
+
+        for u, v in sorted(self.presentes):
+            if estado["residual_reversa"].get((u, v), 0.0) > 0 and (u, v) not in self.reversas:
+                grupo = self._criar_reversa(u, v)
+                anims.append(FadeIn(grupo, run_time=run_time))
+            elif (
+                estado["residual_reversa"].get((u, v), 0.0) <= 0
+                and (u, v) in self.reversas
+            ):
+                grupo = self.reversas.pop((u, v))
+                self.cor_reversa.pop((u, v), None)
+                anims.append(FadeOut(grupo, run_time=run_time))
+
+        marcados = set(estado.get("marcados") or [])
+        for v in range(rec.V_REDE):
+            cor = PALETA["alcancado"][0] if v in marcados else COR_NO
+            if cor != self.fill_atual[v]:
+                self.circulos[v].set_fill(cor, opacity=1.0)
+                self.fill_atual[v] = cor
+        return anims
+
+    # -- destaque de um passo ---------------------------------------------
+
+    def _flash(self, ponto, cor: str) -> Flash:
+        return Flash(
+            ponto,
+            color=cor,
+            line_length=0.12,
+            num_lines=8,
+            flash_radius=0.22,
+            run_time=RITMO["play_destaque"],
+        )
+
+    def animar(self, passo) -> tuple[list[Animation], list[Mobject], list[Mobject]]:
+        """Devolve (animações, mobjects a adicionar, mobjects a remover)."""
+        est = passo.estado
+        tipo, u, v, status = passo.destaque
+        anims: list[Animation] = []
+        adicionar: list[Mobject] = []
+        remover: list[Mobject] = []
+
+        # 1) aresta que entra na rede: a presença vem do estado (o passo
+        #    `("aresta", u, v, "insere")` chega antes de a aresta existir).
+        presentes = {(a, b) for a, b, _c in est["arestas"]}
+        for a, b in sorted(presentes - self.presentes):
+            self._criar_aresta(a, b, est["capacidades"][(a, b)])
+            self.presentes.add((a, b))
+            adicionar += [
+                self.arestas[(a, b)],
+                self.fundos[(a, b)],
+                self.textos[(a, b)],
+            ]
+            anims += [
+                FadeIn(self.arestas[(a, b)], run_time=RITMO["play"]),
+                FadeIn(self.fundos[(a, b)], run_time=RITMO["play"]),
+                FadeIn(self.textos[(a, b)], run_time=RITMO["play"]),
+                self._flash(ponto_na_aresta(a, b, 0.5), PALETA["caminho"][0]),
+            ]
+
+        # 2) alvo de cor: foco do passo, senão o estado base da aresta
+        lado, chave = "", (u, v)
+        if u is not None and tipo in ("busca", "caminho", "aumento", "corte"):
+            lado, chave = arcos_de(u, v, self.arestas_arquivo)
+
+        cor_foco, larg_foco = None, LARG_SETA
+        if tipo == "busca" and status in ("olhando", "examina", "descoberto"):
+            cor_foco, larg_foco = PALETA["exame"][0], 4.2
+        elif tipo == "caminho" and status == "aumentante":
+            cor_foco, larg_foco = PALETA["caminho"][0], 5.5
+        elif tipo == "aumento":
+            cor_foco, larg_foco = PALETA["caminho"][0], 5.5
+        elif tipo == "corte" and status == "cruza":
+            lado_corte = set(est["corte"])
+            if u in lado_corte and v not in lado_corte:
+                cor_foco, larg_foco = PALETA["caminho"][0], 5.5
+            else:
+                # o trace dispara "cruza" para TODA aresta avaliada no check;
+                # só é corte de verdade a que vai de S para T.
+                cor_foco, larg_foco = PALETA["exame"][0], 4.2
+
+        for a, b in sorted(self.presentes):
+            fluxo = est["fluxos"].get((a, b), 0.0)
+            cap = est["capacidades"].get((a, b), 0.0)
+            papel = "fora" if fluxo <= 0 else ("saturada" if fluxo >= cap else "fluxo")
+            cor = PALETA[papel][0]
+            larg = LARG_SETA if papel == "fora" else 4.2
+            if lado == "direta" and chave == (a, b) and cor_foco is not None:
+                cor, larg = cor_foco, larg_foco
+            if cor != self.cor_atual[(a, b)] or abs(larg - self.larg_atual[(a, b)]) > 1e-6:
+                anims.append(
+                    self.arestas[(a, b)].animate.set_color(cor).set_stroke(width=larg)
+                )
+                self.cor_atual[(a, b)] = cor
+                self.larg_atual[(a, b)] = larg
+            texto = f"{fluxo:g}/{cap:g}"
+            if texto != self.texto_atual[(a, b)]:
+                anims.append(self._troca_texto(a, b, texto))
+
+        # 3) reversas: nascem quando o fluxo deixa de ser zero
+        for a, b in sorted(self.presentes):
+            tem = est["residual_reversa"].get((a, b), 0.0) > 0
+            if tem and (a, b) not in self.reversas:
+                grupo = self._criar_reversa(a, b)
+                adicionar.append(grupo)
+                anims.append(FadeIn(grupo, run_time=RITMO["play"]))
+            elif not tem and (a, b) in self.reversas:
+                grupo = self.reversas.pop((a, b))
+                self.cor_reversa.pop((a, b), None)
+                remover.append(grupo)
+                anims.append(FadeOut(grupo, run_time=RITMO["play"]))
+
+        for chave_rev, grupo in self.reversas.items():
+            cor = PALETA["reversa"][0]
+            if lado == "reversa" and chave == chave_rev and cor_foco is not None:
+                cor = cor_foco
+            if cor != self.cor_reversa.get(chave_rev):
+                anims.append(grupo.animate.set_color(cor))
+                self.cor_reversa[chave_rev] = cor
+
+        # rótulo `res = f` só no passo que foca a reversa
+        alvo_rev = chave if (lado == "reversa" and cor_foco is not None) else None
+        if alvo_rev != self.rotulo_rev_chave:
+            if self.rotulo_rev is not None:
+                anims.append(FadeOut(self.rotulo_rev, run_time=RITMO["play"]))
+                self.rotulo_rev = None
+                self.rotulo_rev_chave = None
+            if alvo_rev is not None:
+                a, b = alvo_rev
+                fluxo = est["fluxos"][alvo_rev]
+                self.rotulo_rev = self._rotulo_com_fundo(
+                    f"res = {fluxo:g}",
+                    self.ponto_reversa(a, b),
+                    12,
+                    PALETA["reversa"][0],
+                )
+                anims.append(FadeIn(self.rotulo_rev, run_time=RITMO["play"]))
+                self.rotulo_rev_chave = alvo_rev
+
+        # 4) alcançados (lado S)
+        marcados = set(est.get("marcados") or [])
+        for no in range(rec.V_REDE):
+            cor = PALETA["alcancado"][0] if no in marcados else COR_NO
+            if cor != self.fill_atual[no]:
+                anims.append(self.circulos[no].animate.set_fill(cor, opacity=1.0))
+                self.fill_atual[no] = cor
+
+        # 5) anel de foco (sticky no bookkeeping, como pede o plano)
+        foco = self.foco
+        if tipo == "busca" and status in ("olhando", "examina") and u is not None:
+            foco = u
+        elif tipo == "busca" and status == "descoberto" and v is not None:
+            foco = v
+        elif tipo == "busca" and status in ("nova", "fim"):
+            foco = None
+        elif tipo in ("caminho", "aumento", "valor", "corte"):
+            foco = None
+        if foco != self.foco:
+            if foco is None:
+                anims.append(self.anel_foco.animate.set_stroke(opacity=0.0))
+            else:
+                alvo = np.array([COORDS[foco][0], COORDS[foco][1], 0.0])
+                anims.append(
+                    self.anel_foco.animate.move_to(alvo).set_stroke(
+                        color=PALETA["exame"][0], width=2.0, opacity=1.0
+                    )
+                )
+            self.foco = foco
+
+        # 6) lados do corte (o fecho é gradual no trace)
+        if tipo == "corte" and status in ("lado_s", "lado_t") and v is not None:
+            cor = PALETA["alcancado"][0] if status == "lado_s" else COR_BORDA_NO
+            anims.append(
+                self.aneis_corte[v].animate.set_stroke(color=cor, width=2.2, opacity=1.0)
+            )
+
+        # flashes de inspeção / augmentação / valor
+        if tipo == "busca" and status in ("olhando", "examina", "descoberto"):
+            if lado == "reversa":
+                ponto = self.ponto_reversa(u, v, 0.5, 0.0)
+            else:
+                ponto = ponto_na_aresta(u, v, 0.5)
+            anims.append(self._flash(ponto, PALETA["exame"][0]))
+        elif tipo in ("caminho", "aumento"):
+            ponto = (
+                self.ponto_reversa(u, v, 0.5, 0.0)
+                if lado == "reversa"
+                else ponto_na_aresta(u, v, 0.5)
+            )
+            anims.append(self._flash(ponto, PALETA["caminho"][0]))
+        elif tipo == "valor":
+            anims.append(
+                self._flash(
+                    np.array([COORDS[rec.T_SUMIDOURO][0], COORDS[rec.T_SUMIDOURO][1], 0.0]),
+                    PALETA["caminho"][0],
+                )
+            )
+        elif tipo == "busca" and status == "nova" and est.get("caminho"):
+            for a, b in est["caminho"]:
+                lado_p, chave_p = arcos_de(a, b, self.arestas_arquivo)
+                if lado_p == "direta" and chave_p in self.arestas:
+                    anims.append(
+                        self.arestas[chave_p].animate.set_color(
+                            PALETA["caminho"][0]
+                        ).set_stroke(width=5.5)
+                    )
+                    self.cor_atual[chave_p] = PALETA["caminho"][0]
+                    self.larg_atual[chave_p] = 5.5
+            anims.append(
+                self._flash(
+                    np.array([COORDS[rec.T_SUMIDOURO][0], COORDS[rec.T_SUMIDOURO][1], 0.0]),
+                    PALETA["caminho"][0],
+                )
+            )
+
+        return anims, adicionar, remover
+
+    # -- fecho: corte mínimo ----------------------------------------------
+
+    def destacar_corte(self, estado: dict) -> list[Animation]:
+        anims: list[Animation] = []
+        lado = set(estado["corte"])
+        for v in range(rec.V_REDE):
+            cor = PALETA["alcancado"][0] if v in lado else COR_BORDA_NO
+            anims.append(
+                self.aneis_corte[v].animate.set_stroke(color=cor, width=2.2, opacity=1.0)
+            )
+        for a, b in sorted(self.presentes):
+            if a in lado and b not in lado:
+                anims.append(
+                    self.arestas[(a, b)].animate.set_color(
+                        PALETA["caminho"][0]
+                    ).set_stroke(width=5.5)
+                )
+                self.cor_atual[(a, b)] = PALETA["caminho"][0]
+                self.larg_atual[(a, b)] = 5.5
+                anims.append(self._flash(ponto_na_aresta(a, b, 0.5), PALETA["caminho"][0]))
+        if self.foco is not None:
+            anims.append(self.anel_foco.animate.set_stroke(opacity=0.0))
+            self.foco = None
+        return anims
+
+
+# ---------------------------------------------------------------------------
+# Painel de código: moldura fixa 7,86 × 4,55, uma view por função (§4)
+# ---------------------------------------------------------------------------
+
+
+class CodePanel:
+    """Código real da função executada, na íntegra, com moldura fixa.
+
+    - um `Code` por função de `FUNCOES_PAINEL` (13 no BFS, 14 no DFS);
+    - a escala é calculada UMA vez pela maior view (sem zoom na troca);
+    - o grupo estável contém só a moldura; conteúdo e indicador são mobjects
+      de cena (sem texto fantasma);
+    - troca em DOIS `play`: FadeOut do antigo e só depois FadeIn do novo.
+    """
+
+    PADDING_ESQ = 0.16
+    PADDING_DIR = 0.16
+    PADDING_TOPO = 0.12
+    PADDING_BASE = 0.12
+    ALTURA_CABECALHO = 0.28  # cabeçalho + respiro até a primeira linha
+    BUFF_CABECALHO = 0.06
+    TEMPO_FADE = RITMO["fade"]
+    FONTE_CODIGO = 24  # fonte nativa do `Code` (base do cálculo de pt efetivo)
+
+    def __init__(self, algoritmo: str):
+        self.algoritmo = algoritmo
+        self.funcoes = rec.funcoes_codigo(algoritmo)
+        self._por_chave = {(f.modulo, f.nome): i for i, f in enumerate(self.funcoes)}
+
+        self.codigos: list[Code] = []
+        for f in self.funcoes:
+            codigo = Code(
+                code_string=f.texto,
+                language="python",
+                formatter_style="monokai",
+                add_line_numbers=True,
+                line_numbers_from=f.inicio,
+                background="rectangle",
+            )
+            # A moldura nativa do `Code` não acompanha o texto.
+            codigo.remove(codigo.background)
+            self.codigos.append(codigo)
+
+        largura_util = CODIGO["largura"] - self.PADDING_ESQ - self.PADDING_DIR
+        altura_util = CODIGO["altura"] - self.PADDING_TOPO - self.PADDING_BASE
+        self.escala = min(
+            (altura_util - self.ALTURA_CABECALHO) / max(c.height for c in self.codigos),
+            largura_util / max(c.width for c in self.codigos),
+        )
+        for codigo in self.codigos:
+            codigo.scale(self.escala)
+
+        self.fonte_efetiva = self.FONTE_CODIGO * self.escala
+
+        self.conteudos: list[VGroup] = []
+        for f, codigo in zip(self.funcoes, self.codigos):
+            cabecalho = Text(self._rotulo(f), font_size=12, color=COR_CABECALHO)
+            self.conteudos.append(
+                VGroup(cabecalho, codigo).arrange(
+                    DOWN, aligned_edge=LEFT, buff=self.BUFF_CABECALHO
+                )
+            )
+
+        # Moldura FIXA do contrato (§1/§4); nunca é reconstruída.
+        self.moldura = RoundedRectangle(
+            corner_radius=0.08,
+            width=CODIGO["largura"],
+            height=CODIGO["altura"],
+            color=COR_BORDA_NO,
+            stroke_width=1.2,
+            fill_color="#12141d",
+            fill_opacity=0.85,
+        )
+        self.moldura.to_corner(UL, buff=CODIGO["buff"])
+
+        ancora = (
+            self.moldura.get_corner(UL)
+            + RIGHT * self.PADDING_ESQ
+            + DOWN * self.PADDING_TOPO
+        )
+        for conteudo in self.conteudos:
+            conteudo.move_to(ancora, aligned_edge=UL)
+
+        self.indicadores = [
+            SurroundingRectangle(
+                codigo.code_lines[0],
+                color=PALETA["caminho"][0],
+                buff=0.04,
+                stroke_width=2.2,
+                fill_color=PALETA["caminho"][0],
+                fill_opacity=0.12,
+            )
+            for codigo in self.codigos
+        ]
+
+        self.mobject = VGroup(self.moldura)
+        self.ativo: int | None = None
+        self.visivel: VGroup | None = None
+        self.indicador: SurroundingRectangle | None = None
+
+    def _rotulo(self, funcao: rec.FuncaoCodigo) -> str:
+        return f"{funcao.nome}  ·  {funcao.arquivo}:{funcao.inicio}–{funcao.fim}"
+
+    def _view(self, passo: rec.Step) -> int:
+        funcao = rec.funcao_da_linha(self.algoritmo, passo.linha, passo.modulo)
+        return self._por_chave[(funcao.modulo, funcao.nome)]
+
+    def _posicionar(self, indicador, indice: int, linha: int) -> None:
+        codigo = self.codigos[indice]
+        funcao = self.funcoes[indice]
+        pos = max(0, min(linha - funcao.inicio, len(codigo.code_lines) - 1))
+        alvo = codigo.code_lines[pos]
+        indicador.move_to(alvo.get_center())
+        indicador.stretch_to_fit_width(alvo.width + 0.25)
+        indicador.stretch_to_fit_height(alvo.height + 0.12)
+
+    def encaixar(self, passo: rec.Step) -> None:
+        """Primeira montagem: o indicador nasce na linha executada."""
+        indice = self._view(passo)
+        self.ativo = indice
+        self.visivel = self.conteudos[indice]
+        self.indicador = self.indicadores[indice]
+        self._posicionar(self.indicador, indice, passo.linha)
+
+    def mudou(self, passo: rec.Step) -> bool:
+        return self._view(passo) != self.ativo
+
+    def trocar(self, passo: rec.Step) -> tuple[list[Animation], list[Animation]]:
+        """Troca de view: devolve `(sai, entra)` para DOIS `play` separados."""
+        indice = self._view(passo)
+        if indice == self.ativo:
+            return [], []
+
+        antigo, antigo_ind = self.visivel, self.indicador
+        novo, novo_ind = self.conteudos[indice], self.indicadores[indice]
+        self._posicionar(novo_ind, indice, passo.linha)
+        self.ativo = indice
+        self.visivel = novo
+        self.indicador = novo_ind
+
+        t = self.TEMPO_FADE
+        sai = [
+            FadeOut(antigo, run_time=t, shift=DOWN * 0.10),
+            FadeOut(antigo_ind, run_time=t, shift=DOWN * 0.10),
+        ]
+        entra = [
+            FadeIn(novo, run_time=t, shift=UP * 0.10),
+            FadeIn(novo_ind, run_time=t, shift=UP * 0.10),
+        ]
+        return sai, entra
+
+    def destacar(self, passo: rec.Step) -> Animation:
+        codigo = self.codigos[self.ativo]
+        funcao = self.funcoes[self.ativo]
+        pos = max(0, min(passo.linha - funcao.inicio, len(codigo.code_lines) - 1))
+        alvo = codigo.code_lines[pos]
+        return (
+            self.indicador.animate.move_to(alvo.get_center())
+            .stretch_to_fit_width(alvo.width + 0.25)
+            .stretch_to_fit_height(alvo.height + 0.12)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Painel de estado: 5 slots fixos (§6)
+# ---------------------------------------------------------------------------
+
+
+class StatePanel:
+    """5 slots fixos, alinhados à esquerda, sem trepidação.
+
+    Slot 1/2 = ação em duas linhas (quebra determinística em 44 ch), 3 = fila
+    ou pilha, 4 = marcados, 5 = veredito do corte (só no fecho).
+    """
+
+    N_SLOTS = 5
+
+    def __init__(self, algoritmo: str):
+        self.algoritmo = algoritmo
+        self.centro = np.array([ESTADO["centro"][0], ESTADO["centro"][1], 0.0])
+        self.largura = ESTADO["largura"]
+        self.altura = ESTADO["altura"]
+        self.fundo = RoundedRectangle(
+            corner_radius=0.15,
+            width=self.largura,
+            height=self.altura,
+            color=COR_BORDA_NO,
+            stroke_width=1.5,
+            fill_color=COR_PAINEL,
+            fill_opacity=0.9,
+        ).move_to(self.centro)
+
+        x0 = self.centro[0] - self.largura / 2 + 0.22
+        util = self.altura - 0.40
+        passo = util / (self.N_SLOTS - 1)
+        topo = self.centro[1] + util / 2
+        self.posicoes = [
+            np.array([x0, topo - i * passo, 0.0]) for i in range(self.N_SLOTS)
+        ]
+
+        self.linhas: list[Text | None] = [None] * self.N_SLOTS
+        self.conteudos: list[str] = [""] * self.N_SLOTS
+        self.cores: list[str] = [""] * self.N_SLOTS
+        self.fontes: list[int] = [12] * self.N_SLOTS
+
+    def _criar(self, i: int, texto: str, cor: str, fonte: int) -> Text:
+        t = Text(texto, font_size=fonte, color=cor)
+        t.move_to(self.posicoes[i], aligned_edge=LEFT)
+        return t
+
+    def iniciar(self, textos: list[tuple[str, str, int]]) -> list[Mobject]:
+        for i, (texto, cor, fonte) in enumerate(textos):
+            # slot vazio NÃO vira mobject: `Text(" ")` não tem pontos e ficaria
+            # parado na origem. O slot nasce no FadeIn quando o texto chega.
+            self.linhas[i] = self._criar(i, texto, cor, fonte) if texto else None
+            self.conteudos[i] = texto
+            self.cores[i] = cor
+            self.fontes[i] = fonte
+        return [self.fundo, *[l for l in self.linhas if l is not None]]
+
+    def atualizar(self, textos: list[tuple[str, str, int]]) -> list[Animation]:
+        anims: list[Animation] = []
+        for i, (texto, cor, fonte) in enumerate(textos):
+            if texto == self.conteudos[i] and cor == self.cores[i] and fonte == self.fontes[i]:
+                continue
+            novo = self._criar(i, texto, cor, fonte)
+            antigo = self.linhas[i]
+            if antigo is None:
+                anims.append(FadeIn(novo, run_time=RITMO["play"]))
+            else:
+                deslize = UP * 0.12 if i > 0 else ORIGIN
+                anims.append(
+                    AnimationGroup(
+                        FadeOut(antigo, run_time=RITMO["play"], shift=deslize),
+                        FadeIn(novo, run_time=RITMO["play"], shift=deslize),
+                    )
+                )
+            self.linhas[i] = novo
+            self.conteudos[i] = texto
+            self.cores[i] = cor
+            self.fontes[i] = fonte
+        return anims
+
+    def textos_do_passo(self, passo, max_iteracao: int) -> list[tuple[str, str, int]]:
+        """Os 5 slots a partir do passo (slot 5 só no fecho)."""
+        est = passo.estado
+        cor = cor_destaque(passo)
+        linha1, linha2 = dividir_acao(passo.acao)
+        if self.algoritmo == "edmonds_karp":
+            busca = fmt_fila(est)
+            if est.get("fila"):
+                busca += f" · frente {est['fila'][0]}"
+        else:
+            busca = fmt_pilha(est)
+            if est.get("pilha"):
+                busca += f" · topo {est['pilha'][-1]}"
+        return [
+            (linha1, cor, 12),
+            (linha2, cor, 12),
+            (busca, COR_BORDA_NO, 11),
+            (fmt_marcados(est), PALETA["alcancado"][0], 11),
+            ("", ESTRUTURAIS["texto"], 12),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Guia visual: 7 papéis, fonte única 12, duas linhas (4 + 3) (§3)
+# ---------------------------------------------------------------------------
+
+
+class GuiaVisual:
+    FONTE = 12
+    BUFF_ITEM = 0.26
+
+    def __init__(self):
+        itens = []
+        for papel in ORDEM_GUIA:
+            cor, texto, forma = PALETA[papel]
+            if forma == "ring":
+                marca = Circle(radius=0.075, color=cor, stroke_width=2.6, fill_opacity=0.0)
+            elif forma == "dash":
+                marca = DashedLine(
+                    LEFT * 0.08,
+                    RIGHT * 0.08,
+                    dash_length=0.035,
+                    stroke_width=1.8,
+                    color=cor,
+                )
+            else:
+                marca = Dot(color=cor, radius=0.075)
+            itens.append(
+                VGroup(marca, Text(texto, font_size=self.FONTE, color=COR_TEXTO)).arrange(
+                    RIGHT, buff=0.10
+                )
+            )
+
+        linha1 = VGroup(*itens[:4]).arrange(RIGHT, buff=self.BUFF_ITEM)
+        linha2 = VGroup(*itens[4:]).arrange(RIGHT, buff=self.BUFF_ITEM)
+        self.mobject = VGroup(linha1, linha2).arrange(
+            DOWN, aligned_edge=LEFT, buff=0.10
+        )
+        self.mobject.move_to(np.array([TITULO_X, -0.44, 0.0]), aligned_edge=UL)
+        self.larguras = (linha1.width, linha2.width)
+
+
+# ---------------------------------------------------------------------------
+# Painel de estrutura: abas `Rede residual` / `Fila (BFS)`|`Pilha (DFS)` (§5)
+# ---------------------------------------------------------------------------
+
+ABAS = {
+    "edmonds_karp": (("rede", "Rede residual"), ("busca", "Fila (BFS)")),
+    "ford_fulkerson_dfs": (("rede", "Rede residual"), ("busca", "Pilha (DFS)")),
+}
+
+COR_TAB_ATIVA = "#1f2637"
+COR_TAB_INATIVA = "#0f111a"
+COR_CHIP = "#1f2637"
+COR_CHIP_FOCO = COR_LINHA_TABELA
+
+
+class _AbaRede:
+    """Tabela `aresta | C | f | res→ | res←`, duas metades de 4 arestas."""
+
+    COLUNAS = (("aresta", 1.00), ("C", 0.50), ("f", 0.50), ("res→", 0.62), ("res←", 0.62))
+    ALTURA_CHIP = 0.22
+
+    def __init__(self, painel):
+        self.p = painel
+        self.chips: dict[tuple[int, int, int], RoundedRectangle] = {}
+        self.textos: dict[tuple[int, int, int], Text] = {}
+        self.valores: dict[tuple[int, int, int], str] = {}
+        self.arestas = [(u, v) for u, v, _c in rec.ARESTAS_REDE]
+        self.mobjects: list[Mobject] = []
+        self.estaticos: list[Mobject] = []
+
+    def _colunas(self, metade: int):
+        x = self.p.x0 + metade * 3.36
+        centros = []
+        for _nome, largura in self.COLUNAS:
+            centros.append(x + largura / 2)
+            x += largura
+        return centros
+
+    def _valores(self, estado: dict, u: int, v: int) -> tuple[str, ...]:
+        cap = estado["capacidades"].get((u, v))
+        fluxo = estado["fluxos"].get((u, v))
+        direta = estado["residual_direta"].get((u, v))
+        reversa = estado["residual_reversa"].get((u, v))
+        if cap is None:
+            return (f"{u}→{v}", "—", "—", "—", "—")
+        return (
+            f"{u}→{v}",
+            f"{cap:g}",
+            f"{fluxo:g}",
+            f"{direta:g}",
+            f"{reversa:g}",
+        )
+
+    def construir(self, passo) -> list[Mobject]:
+        est = passo.estado
+        self.chips, self.textos, self.valores = {}, {}, {}
+        self.mobjects = []
+        self.estaticos = []
+        for metade in (0, 1):
+            centros = self._colunas(metade)
+            y_cab = -1.98
+            for i, (nome, _larg) in enumerate(self.COLUNAS):
+                cab = Text(nome, font_size=9, color=COR_BORDA_NO)
+                cab.move_to(np.array([centros[i], y_cab, 0.0]))
+                self.mobjects.append(cab)
+                self.estaticos.append(cab)
+            for linha, (u, v) in enumerate(self.arestas[metade * 4 : metade * 4 + 4]):
+                y = -2.28 - linha * 0.30
+                valores = self._valores(est, u, v)
+                for i, texto in enumerate(valores):
+                    largura = self.COLUNAS[i][1] - 0.04
+                    chip = RoundedRectangle(
+                        corner_radius=0.05,
+                        width=largura,
+                        height=self.ALTURA_CHIP,
+                        fill_color=COR_CHIP,
+                        fill_opacity=1.0,
+                        stroke_width=0.0,
+                    ).move_to(np.array([centros[i], y, 0.0]))
+                    cor = (
+                        PALETA["saturada"][0]
+                        if i == 3 and texto == "0"
+                        else COR_TEXTO
+                    )
+                    t = Text(texto, font_size=10, color=cor).move_to(chip.get_center())
+                    self.chips[(u, v, i)] = chip
+                    self.textos[(u, v, i)] = t
+                    self.valores[(u, v, i)] = texto
+                    self.mobjects += [chip, t]
+        return list(self.mobjects)
+
+    def sincronizar(self, passo):
+        est = passo.estado
+        foco = self.p._foco(passo)
+        anims: list[Animation] = []
+        for u, v in self.arestas:
+            valores = self._valores(est, u, v)
+            for i, texto in enumerate(valores):
+                chave = (u, v, i)
+                if texto == self.valores[chave]:
+                    continue
+                antigo = self.textos[chave]
+                cor = PALETA["saturada"][0] if i == 3 and texto == "0" else COR_TEXTO
+                novo = Text(texto, font_size=10, color=cor).move_to(
+                    self.chips[chave].get_center()
+                )
+                anims.append(
+                    AnimationGroup(
+                        FadeOut(antigo, run_time=RITMO["play"]),
+                        FadeIn(novo, run_time=RITMO["play"]),
+                    )
+                )
+                self.textos[chave] = novo
+                self.valores[chave] = texto
+            # chip da aresta em foco
+            on = (u, v) == foco
+            for i in range(len(self.COLUNAS)):
+                chip = self.chips[(u, v, i)]
+                alvo_fill = COR_CHIP_FOCO if on else COR_CHIP
+                alvo_stroke = 1.2 if on else 0.0
+                atual_fill = chip.get_fill_color().to_hex()
+                if atual_fill.lower() != alvo_fill.lower() or chip.get_stroke_width() != alvo_stroke:
+                    anims.append(
+                        chip.animate.set_fill(alvo_fill, opacity=1.0).set_stroke(
+                            color=PALETA["exame"][0], width=alvo_stroke
+                        )
+                    )
+        return anims, [], []
+
+    def todos(self) -> list[Mobject]:
+        # Ao vivo: `construir` monta uma vez, mas `sincronizar` troca textos.
+        # Devolver `self.mobjects` (snapshot da montagem) faria o FadeOut da
+        # troca de aba acertar mobjects já fora de cena e deixar fantasma.
+        return [
+            *self.estaticos,
+            *self.chips.values(),
+            *self.textos.values(),
+        ]
+
+
+class _AbaBusca:
+    """Fronteira real da busca: fila (BFS) ou pilha de recursão (DFS)."""
+
+    PASSO_CHIP = 0.54
+    PASSO_PILHA = 0.66
+
+    def __init__(self, painel):
+        self.p = painel
+        self.bfs = painel.algoritmo == "edmonds_karp"
+        self.chips: dict[int, VGroup] = {}
+        self.setas: dict[tuple[int, int], Arrow] = {}
+        self.mobjects: list[Mobject] = []
+        self.frente: Text | None = None
+        self.fim: Text | None = None
+        self.edge_to: Text | None = None
+        self.marcados: Text | None = None
+        self.inspecoes: Text | None = None
+        self.conteudos = {"edgeTo": "", "marcados": "", "inspecoes": ""}
+        self.estaticos: list[Mobject] = []
+
+    # -- geometria ---------------------------------------------------------
+
+    def _passo(self) -> float:
+        return self.PASSO_CHIP if self.bfs else self.PASSO_PILHA
+
+    def _x(self, i: int) -> float:
+        return self.p.x0 + 0.10 + i * self._passo()
+
+    def _lista(self, estado: dict) -> list[int]:
+        return list(estado["fila"] if self.bfs else estado["pilha"])
+
+    def _chip(self, v: int) -> VGroup:
+        caixa = RoundedRectangle(
+            corner_radius=0.06,
+            width=0.42,
+            height=0.30,
+            fill_color=COR_CHIP_FOCO,
+            fill_opacity=1.0,
+            stroke_color=COR_BORDA_NO,
+            stroke_width=1.2,
+        )
+        texto = Text(str(v), font_size=11, color=COR_TEXTO).move_to(caixa.get_center())
+        return VGroup(caixa, texto)
+
+    def _seta(self, a: int, b: int) -> Arrow:
+        x0 = self._x(a) + 0.21
+        x1 = self._x(b) - 0.21
+        return Arrow(
+            np.array([x0, -2.62, 0.0]),
+            np.array([x1, -2.62, 0.0]),
+            buff=0.0,
+            stroke_width=1.6,
+            tip_length=0.08,
+            color=COR_BORDA_NO,
+        )
+
+    # -- montagem ----------------------------------------------------------
+
+    def construir(self, passo) -> list[Mobject]:
+        est = passo.estado
+        self.chips, self.setas = {}, {}
+        self.mobjects = []
+
+        caption = Text(
+            "fronteira da busca · ordem real do estado", font_size=9, color=COR_BORDA_NO
+        )
+        caption.move_to(np.array([self.p.x0, -1.98, 0.0]), aligned_edge=LEFT)
+        self.mobjects.append(caption)
+        self.estaticos = [caption]
+
+        lista = self._lista(est)
+        for i, v in enumerate(lista):
+            chip = self._chip(v).move_to(np.array([self._x(i), -2.62, 0.0]))
+            self.chips[v] = chip
+            self.mobjects.append(chip)
+            if not self.bfs and i > 0:
+                seta = self._seta(lista[i - 1], v)
+                self.setas[(lista[i - 1], v)] = seta
+                self.mobjects.append(seta)
+
+        # rótulos em palavra: ↓/↑ em fonte 9 vira "l"/"1" no render
+        self.frente = Text("frente" if self.bfs else "base", font_size=9, color=COR_BORDA_NO)
+        self.fim = Text("fim" if self.bfs else "topo", font_size=9, color=COR_BORDA_NO)
+        if lista:
+            self.frente.move_to(np.array([self._x(0), -2.30, 0.0]))
+            self.fim.move_to(np.array([self._x(len(lista) - 1), -2.94, 0.0]))
+        else:
+            self.frente.move_to(np.array([self._x(0), -2.30, 0.0])).set_opacity(0.0)
+            self.fim.move_to(np.array([self._x(0), -2.94, 0.0])).set_opacity(0.0)
+        self.mobjects += [self.frente, self.fim]
+
+        x_info = self.p.x0 + 4.05
+        self.edge_to = Text(fmt_edge_to(est), font_size=10, color=COR_TEXTO)
+        self.edge_to.move_to(np.array([x_info, -2.30, 0.0]), aligned_edge=LEFT)
+        self.marcados = Text(fmt_marcados(est), font_size=10, color=PALETA["alcancado"][0])
+        self.marcados.move_to(np.array([x_info, -2.62, 0.0]), aligned_edge=LEFT)
+        self.inspecoes = Text(
+            f"inspeções {est['inspecoes']}", font_size=10, color=COR_BORDA_NO
+        )
+        self.inspecoes.move_to(np.array([x_info, -2.94, 0.0]), aligned_edge=LEFT)
+        self.mobjects += [self.edge_to, self.marcados, self.inspecoes]
+        self.conteudos = {
+            "edgeTo": fmt_edge_to(est),
+            "marcados": fmt_marcados(est),
+            "inspecoes": f"inspeções {est['inspecoes']}",
+        }
+        return list(self.mobjects)
+
+    # -- atualização -------------------------------------------------------
+
+    def _troca(self, atual: Text, texto: str, pos, cor: str, fonte: int = 10) -> tuple[Text, Animation]:
+        novo = Text(texto, font_size=fonte, color=cor)
+        novo.move_to(pos, aligned_edge=LEFT)
+        return novo, AnimationGroup(
+            FadeOut(atual, run_time=RITMO["play"]),
+            FadeIn(novo, run_time=RITMO["play"]),
+        )
+
+    def sincronizar(self, passo):
+        est = passo.estado
+        lista = self._lista(est)
+        anims: list[Animation] = []
+        adicionar: list[Mobject] = []
+        remover: list[Mobject] = []
+
+        alvo = {v: np.array([self._x(i), -2.62, 0.0]) for i, v in enumerate(lista)}
+        for v in list(self.chips):
+            if v not in alvo:
+                chip = self.chips.pop(v)
+                remover.append(chip)
+                anims.append(FadeOut(chip, run_time=RITMO["play"]))
+        for v, pos in alvo.items():
+            if v not in self.chips:
+                chip = self._chip(v).move_to(pos)
+                self.chips[v] = chip
+                adicionar.append(chip)
+                anims.append(FadeIn(chip, run_time=RITMO["play"]))
+            elif not np.allclose(self.chips[v].get_center(), pos, atol=1e-6):
+                anims.append(self.chips[v].animate.move_to(pos))
+
+        # setas do caminho de recursão (DFS)
+        pares = set(zip(lista, lista[1:])) if not self.bfs else set()
+        for par in list(self.setas):
+            if par not in pares:
+                seta = self.setas.pop(par)
+                remover.append(seta)
+                anims.append(FadeOut(seta, run_time=RITMO["play"]))
+        for par in pares:
+            if par not in self.setas:
+                seta = self._seta(par[0], par[1])
+                self.setas[par] = seta
+                adicionar.append(seta)
+                anims.append(FadeIn(seta, run_time=RITMO["play"]))
+
+        if lista:
+            anims += [
+                self.frente.animate.move_to(np.array([self._x(0), -2.30, 0.0])).set_opacity(1.0),
+                self.fim.animate.move_to(
+                    np.array([self._x(len(lista) - 1), -2.94, 0.0])
+                ).set_opacity(1.0),
+            ]
+        else:
+            anims += [
+                self.frente.animate.set_opacity(0.0),
+                self.fim.animate.set_opacity(0.0),
+            ]
+
+        x_info = self.p.x0 + 4.05
+        for chave, mob, texto, cor in (
+            ("edgeTo", self.edge_to, fmt_edge_to(est), COR_TEXTO),
+            ("marcados", self.marcados, fmt_marcados(est), PALETA["alcancado"][0]),
+            ("inspecoes", self.inspecoes, f"inspeções {est['inspecoes']}", COR_BORDA_NO),
+        ):
+            if texto != self.conteudos[chave]:
+                novo, anim = self._troca(mob, texto, mob.get_left(), cor)
+                anims.append(anim)
+                self.conteudos[chave] = texto
+                if chave == "edgeTo":
+                    self.edge_to = novo
+                elif chave == "marcados":
+                    self.marcados = novo
+                else:
+                    self.inspecoes = novo
+        return anims, adicionar, remover
+
+    def todos(self) -> list[Mobject]:
+        # Ao vivo (ver `_AbaRede.todos`): chips/setas/textos mudam de passo a
+        # passo; a lista da montagem ficaria velha e a troca de aba deixaria
+        # fantasma na tela.
+        vivos = [
+            *self.estaticos,
+            *self.chips.values(),
+            *self.setas.values(),
+            self.frente,
+            self.fim,
+            self.edge_to,
+            self.marcados,
+            self.inspecoes,
+        ]
+        return [m for m in vivos if m is not None]
+
+
+def calcular_abas(algoritmo: str, passos) -> list[str]:
+    """Aba de cada passo, derivada do trace (§5.1).
+
+    A busca fica "aberta" do passo `("busca", _, _, "nova")` até o primeiro
+    passo do módulo do algoritmo fora da função de busca (`has_augmenting_path`
+    ou `dfs`). Enquanto ela está aberta, tudo o que acontece dentro (inclusive
+    `FlowEdge.other`/`residual_capacity_to` e `FlowNetwork.adj`) é `busca`.
+    """
+    modulo_algoritmo = rec.TRECHOS[algoritmo][0]
+    abas: list[str] = []
+    aberta = False
+    for passo in passos:
+        tipo, _u, _v, status = passo.destaque
+        funcao = passo.funcao
+        busca_fn = funcao.endswith("has_augmenting_path") or funcao.endswith(".dfs")
+        if tipo == "busca" and status == "fim":
+            aberta = False
+            abas.append("rede")
+            continue
+        if tipo == "busca" and status == "nova":
+            aberta = True
+            abas.append("busca")
+            continue
+        if busca_fn:
+            aberta = True
+            abas.append("busca")
+            continue
+        if aberta and passo.modulo != modulo_algoritmo:
+            abas.append("busca")
+            continue
+        aberta = False
+        abas.append("rede")
+    return abas
+
+
+class EstruturaPanel:
+    """Abas `Rede residual` e `Busca`, com faixa de contadores sempre visível.
+
+    A aba ativa é derivada do trace (função/linha e fronteira não vazia), nunca
+    de um número de linha digitado. A troca é fade-out total e depois fade-in,
+    em DOIS plays — nunca as duas abas no mesmo frame.
+    """
+
+    def __init__(self, algoritmo: str, passos):
+        self.algoritmo = algoritmo
+        self.max_iteracao = max((p.estado.get("iteracao") or 0) for p in passos)
+        self.abas = calcular_abas(algoritmo, passos)
+        self._i = 0
+        self.centro = np.array([ESTRUTURA["centro"][0], ESTRUTURA["centro"][1], 0.0])
+
+        self.fundo = RoundedRectangle(
+            corner_radius=0.15,
+            width=ESTRUTURA["largura"],
+            height=ESTRUTURA["altura"],
+            color=COR_BORDA_NO,
+            stroke_width=1.5,
+            fill_color=COR_PAINEL,
+            fill_opacity=0.9,
+        ).move_to(self.centro)
+
+        self.x0 = self.fundo.get_left()[0] + 0.16
+        self.x1 = self.fundo.get_right()[0] - 0.16
+
+        self._aba_alto = 0.30
+        self.y_abas_topo = self.fundo.get_top()[1] - 0.06
+        self.abas_visuais: dict[str, tuple[RoundedRectangle, Text]] = {}
+        self._montar_abas()
+
+        self.conteudos = {
+            "rede": _AbaRede(self),
+            "busca": _AbaBusca(self),
+        }
+        self.ativa: str | None = None
+        self.contadores: Text | None = None
+        self.texto_contadores = ""
+
+        self.mobject = VGroup(
+            self.fundo, *[m for par in self.abas_visuais.values() for m in par]
+        )
+
+    def _montar_abas(self) -> None:
+        x = self.x0
+        y = self.y_abas_topo - self._aba_alto / 2
+        for chave, rotulo in ABAS[self.algoritmo]:
+            texto = Text(rotulo, font_size=11)
+            largura = texto.width + 0.30
+            caixa = RoundedRectangle(
+                corner_radius=0.07,
+                width=largura,
+                height=self._aba_alto,
+                color=COR_BORDA_NO,
+                stroke_width=1.2,
+                fill_color=COR_TAB_INATIVA,
+                fill_opacity=1.0,
+            ).move_to(np.array([x + largura / 2, y, 0.0]))
+            texto.move_to(caixa.get_center())
+            self.abas_visuais[chave] = (caixa, texto)
+            x += largura + 0.06
+
+    def _estilo_abas(self, ativa: str) -> list[Animation]:
+        anims: list[Animation] = []
+        for chave, (caixa, texto) in self.abas_visuais.items():
+            on = chave == ativa
+            anims += [
+                caixa.animate.set_stroke(
+                    COR_ACENTO if on else COR_BORDA_NO, width=1.6 if on else 1.2
+                ).set_fill(COR_TAB_ATIVA if on else COR_TAB_INATIVA, opacity=1.0),
+                texto.animate.set_color(WHITE if on else COR_BORDA_NO),
+            ]
+        return anims
+
+    def _aplicar_abas(self, ativa: str) -> None:
+        for chave, (caixa, texto) in self.abas_visuais.items():
+            on = chave == ativa
+            caixa.set_stroke(COR_ACENTO if on else COR_BORDA_NO, width=1.6 if on else 1.2)
+            caixa.set_fill(COR_TAB_ATIVA if on else COR_TAB_INATIVA, opacity=1.0)
+            texto.set_color(WHITE if on else COR_BORDA_NO)
+
+    # -- regra da aba (derivada do trace) ---------------------------------
+
+    def _alvo(self, passo) -> str:
+        """Aba do passo corrente (a sequência foi pré-calculada em `abas`)."""
+        return self.abas[self._i]
+
+    def _foco(self, passo):
+        tipo, u, v, _status = passo.destaque
+        if u is None or tipo not in ("busca", "caminho", "aumento", "corte"):
+            return None
+        arestas = ARESTAS_REDE_SET
+        _lado, chave = arcos_de(u, v, arestas)
+        return chave
+
+    # -- primeiro frame ----------------------------------------------------
+
+    def preparar(self, passo) -> list[Mobject]:
+        self._i = 0
+        alvo = self._alvo(passo)
+        self.ativa = alvo
+        self._aplicar_abas(alvo)
+        conteudo = self.conteudos[alvo].construir(passo)
+        self.texto_contadores = fmt_contadores(passo.estado, self.max_iteracao)
+        self.contadores = Text(
+            self.texto_contadores, font_size=11, color=COR_TEXTO
+        ).move_to(np.array([self.x0, -3.52, 0.0]), aligned_edge=LEFT)
+        return [self.mobject, *conteudo, self.contadores]
+
+    # -- atualização -------------------------------------------------------
+
+    def atualizar(self, passo):
+        """(anims, adicionar, remover, troca); `troca` = (sai, novos)."""
+        alvo = self._alvo(passo)
+        self._i += 1
+
+        if alvo != self.ativa:
+            antigo = self.conteudos[self.ativa]
+            sai = [FadeOut(m, run_time=RITMO["fade"]) for m in antigo.todos()]
+            sai += self._estilo_abas(alvo)
+            self.ativa = alvo
+            novos = self.conteudos[alvo].construir(passo)
+            anims = self._atualizar_contadores(passo)
+            return anims, [], [], (sai, novos)
+
+        anims, adicionar, remover = self.conteudos[alvo].sincronizar(passo)
+        anims += self._atualizar_contadores(passo)
+        return anims, adicionar, remover, None
+
+    def _atualizar_contadores(self, passo) -> list[Animation]:
+        texto = fmt_contadores(passo.estado, self.max_iteracao)
+        if texto == self.texto_contadores:
+            return []
+        antigo = self.contadores
+        novo = Text(texto, font_size=11, color=COR_TEXTO).move_to(
+            np.array([self.x0, -3.52, 0.0]), aligned_edge=LEFT
+        )
+        self.contadores = novo
+        self.texto_contadores = texto
+        return [
+            AnimationGroup(
+                FadeOut(antigo, run_time=RITMO["play"]),
+                FadeIn(novo, run_time=RITMO["play"]),
+            )
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Cena base de execução (§7.3)
+# ---------------------------------------------------------------------------
+
+
+class FlowExecucaoBase(Scene):
+    """Execução linha a linha com código, grafo, estrutura e estado juntos."""
+
+    algoritmo: str = ""
+    titulo: str = ""
+    subtitulo: str = ""
+    por_linha: bool = True
+
+    # -- montagem ----------------------------------------------------------
+
+    def montar(self) -> None:
+        self.camera.background_color = COR_FUNDO
+        self.passos = (
+            rec.coletar_detalhado(self.algoritmo)
+            if self.por_linha
+            else rec.coletar(self.algoritmo)
+        )
+        self.max_iteracao = max((p.estado.get("iteracao") or 0) for p in self.passos)
+
+        titulo = Text(self.titulo, font_size=15, color=WHITE, weight=BOLD)
+        titulo.move_to(np.array([TITULO_X, 3.62, 0.0]), aligned_edge=UL)
+        subtitulo = Text(self.subtitulo, font_size=11, color=COR_ACENTO)
+        subtitulo.next_to(titulo, DOWN, buff=0.05, aligned_edge=LEFT)
+        self.cabecalho = VGroup(titulo, subtitulo)
+        self.add(self.cabecalho)
+
+        self.codigo = CodePanel(self.algoritmo)
+        self.codigo.encaixar(self.passos[0])
+        self.grafo = FlowGraphView()
+        self.estrutura = EstruturaPanel(self.algoritmo, self.passos)
+        self.painel = StatePanel(self.algoritmo)
+        self.guia = GuiaVisual()
+
+        self.play(
+            FadeIn(self.codigo.mobject, shift=RIGHT),
+            FadeIn(self.codigo.visivel),
+            FadeIn(self.codigo.indicador),
+            run_time=0.8,
+        )
+        self.play(FadeIn(self.grafo.mobject), run_time=0.7)
+        mobs_estrutura = self.estrutura.preparar(self.passos[0])
+        self.add(*mobs_estrutura)
+        self.play(*[FadeIn(m, run_time=0.5) for m in mobs_estrutura], run_time=0.5)
+        self.add(self.guia.mobject)
+        self.play(FadeIn(self.guia.mobject), run_time=0.4)
+        self.add(*self.painel.iniciar(self.painel.textos_do_passo(self.passos[0], self.max_iteracao)))
+        self.wait(0.5)
+
+    def limpar(self, run_time: float = 0.5) -> None:
+        if self.mobjects:
+            self.play(FadeOut(Group(*self.mobjects)), run_time=run_time)
+        self.clear()
+
+    # -- um passo ----------------------------------------------------------
+
+    @staticmethod
+    def _tem_flash(passo) -> bool:
+        tipo, _u, _v, status = passo.destaque
+        if tipo == "busca":
+            return status in ("olhando", "examina", "descoberto", "nova")
+        return tipo in ("caminho", "aumento", "valor", "corte")
+
+    def play_step(self, passo) -> None:
+        # 1) troca de view: sai a antiga e SÓ DEPOIS entra a nova (dois plays)
+        if self.codigo.mudou(passo):
+            sai, entra = self.codigo.trocar(passo)
+            self.play(*sai)
+            self.play(*entra)
+
+        # 2) estrutura: troca de aba em dois plays; conteúdo novo entra depois
+        anims_estrutura, adicionar, remover, troca = self.estrutura.atualizar(passo)
+        if troca:
+            sai_aba, novos = troca
+            self.play(*sai_aba)
+            self.add(*novos)
+            self.play(*[FadeIn(m, run_time=RITMO["fade"]) for m in novos])
+        if adicionar:
+            self.add(*adicionar)
+
+        # 3) um único play com indicador + grafo + estado + estrutura
+        anims: list[Animation] = [self.codigo.destacar(passo)]
+        anims_grafo, add_grafo, rem_grafo = self.grafo.animar(passo)
+        if add_grafo:
+            self.add(*add_grafo)
+        anims += anims_grafo
+        anims += self.painel.atualizar(
+            self.painel.textos_do_passo(passo, self.max_iteracao)
+        )
+        anims += anims_estrutura
+
+        run_time = RITMO["play_destaque"] if self._tem_flash(passo) else RITMO["play"]
+        self.play(*anims, run_time=run_time)
+
+        if remover:
+            self.remove(*remover)
+        if rem_grafo:
+            self.remove(*rem_grafo)
+        self.wait(RITMO["pausa"].get(passo.pausa, RITMO["pausa"][0.55]))
+
+    def executar_passos(self) -> list[rec.Step]:
+        for passo in self.passos:
+            self.play_step(passo)
+        return self.passos
+
+    # -- fecho: corte mínimo (§7.4) ---------------------------------------
+
+    def fechar(self) -> None:
+        est = self.passos[-1].estado
+        self.play(*self.grafo.destacar_corte(est), run_time=0.9)
+
+        lado = set(est["corte"])
+        cortadas = [
+            (u, v, c) for u, v, c in rec.ARESTAS_REDE if u in lado and v not in lado
+        ]
+        soma = " + ".join(f"{c:g}" for _u, _v, c in cortadas)
+        saida_s = sum(c for u, _v, c in rec.ARESTAS_REDE if u == rec.S_FONTE)
+        s_txt = "{" + ", ".join(map(str, est["corte"])) + "}"
+        textos = [
+            (
+                f"Saída de s soma {saida_s:g}, mas |f| = {fmt_num(est['valor'])}",
+                PALETA["caminho"][0],
+                12,
+            ),
+            ("o corte S* está saturado: não há folga", PALETA["caminho"][0], 12),
+            (
+                fmt_fila(est) if self.algoritmo == "edmonds_karp" else fmt_pilha(est),
+                COR_BORDA_NO,
+                11,
+            ),
+            (fmt_marcados(est), PALETA["alcancado"][0], 11),
+            (
+                f"S*={s_txt} · C(S,T)={soma}={fmt_num(est['corte_capacidade'])} = |f|",
+                PALETA["caminho"][0],
+                12,
+            ),
+        ]
+        self.play(*self.painel.atualizar(textos), run_time=0.7)
+        self.wait(2.2)
