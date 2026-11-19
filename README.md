@@ -54,11 +54,22 @@ As respostas são materiais de apoio ao estudo e não constituem trabalhos avali
 - [Conjuntos de dados](dataset/)
 - [Instruções para baixar arquivos grandes](dataset/README.md)
 
+## Animações
+
+- [manim-animations](manim-animations/README.md): cenas de Kruskal, Prim, Edmonds-Karp,
+  Ford-Fulkerson e Dijkstra, com painel de código e de estrutura de dados.
+- [Vídeos de entrega e como regenerar](manim-animations/entregas/README.md).
+- [Planos visuais e relatórios](manim-animations/docs/).
+
+Os vídeos não são versionados (`*.mp4`): o código das cenas, os planos e a receita de render
+é que ficam no git. Render local e logs vão para `manim-animations/build/`, descartável.
+
 ## Estrutura do repositório
 
 - `mat-didatico/`: projeto de ensino, cronogramas e materiais didáticos.
 - `algs4-py/`: implementações de referência em Python.
 - `algs4-java/`: implementações de referência em Java.
 - `dataset/`: dados usados em exemplos, testes e exercícios.
+- `manim-animations/`: cenas de animação (Manim), planos, relatórios e entrega dos vídeos.
 - `mat-didatico/trabalhos/`: avaliações práticas, acompanhamentos e apresentação.
 - `mat-didatico/exercicios/`: exercícios complementares com respostas para estudo.
