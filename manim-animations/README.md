@@ -74,9 +74,13 @@ Remove-Item Env:MST_GRAFO
 |---|---|
 | `src/kruskal_mst_scene_new.py` | `MSTIntroScene_new`, `KruskalExecutionScene_new` |
 | `src/prim_mst_scene_new.py` | `PrimIntroScene_new`, `PrimLazyScene_new`, `PrimEagerScene_new` |
-| `src/edmonds_karp_scene_new.py` | `EdmondsKarpIntro_new`, `EdmondsKarpExecutionScene_new` |
-| `src/ford_fulkerson_scene_new.py` | `FordFulkersonIntro_new`, `FordFulkersonExecutionScene_new` |
+| `src/edmonds_karp_scene_new.py` | `EdmondsKarpIntro_new`, `EdmondsKarpExecutionScene_new`, `FullEdmondsKarpVideo_new` |
+| `src/ford_fulkerson_scene_new.py` | `FordFulkersonIntro_new`, `FordFulkersonExecutionScene_new`, `FullFordFulkersonVideo_new` |
 | `src/dijkstra_scene_new.py` | `DijkstraExecutionScene_new` |
+
+As intros de fluxo deixam a relação explícita: `EdmondsKarpIntro_new` mostra
+`Edmonds-Karp = Ford-Fulkerson + BFS`; `FordFulkersonIntro_new` mostra que a
+variante DFS é Ford-Fulkerson puro e **não** aplica Edmonds-Karp.
 
 ## Render de entrega
 

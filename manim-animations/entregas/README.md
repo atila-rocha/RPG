@@ -1,11 +1,19 @@
-# Entregas — animações de MST
+# Entregas — animações de MST e Fluxo Máximo
 
 Vídeos **não são versionados** (`*.mp4` está no `.gitignore`). O que fica versionado é este
 documento: a receita para regenerá-los a partir de `src/` + `dataset/` + os scripts `.ps1`.
 
-Grafo de referência: **tinyEWG** — 8 vértices, 16 arestas (padrão do projeto; `MST_GRAFO` não definida).
+Grafos de referência:
+
+- **MST → tinyEWG** — 8 vértices, 16 arestas (padrão do projeto; `MST_GRAFO` não definida).
+- **Fluxo máximo → tinyFN** — `dataset/tinyFN.txt`, V=6, E=8, arestas `u v capacidade`,
+  origem s=0, sumidouro t=5 (override por `FLUXO_GRAFO`).
+
 Intérprete: `.venv\Scripts\python.exe` na raiz de `manim-animations/`.
-Render vai para `build/media` (descartável); só o vídeo final, renomeado, chega a `entregas/`.
+Render vai para `build/media*` (descartável); só o vídeo final, renomeado, chega a `entregas/`.
+
+Preservação de versão é por **commit/branch do git** (mais os snapshots de código em
+`src/_snapshot_vN/`); **não** se registra hash local de mp4.
 
 ## tinyEWG 1080p60
 
@@ -21,6 +29,32 @@ Render vai para `build/media` (descartável); só o vídeo final, renomeado, che
 
 Os integrais são a concatenação exata das cenas (soma das durações confere).
 
+## tinyFN 480p15 (V4, rev. 4.1)
+
+Aprovado no QA em 21/11/2026 (`docs/relatorios/QA_V4_480P.md`). Contrato visual:
+`docs/planos/PLANO_VISUAL_FLUXO_V4.md`. Gate 0 8/8 (sha do `stages` `c19ee524…7a3a`) e portão
+de layout com 277 verificações, 0 falhas.
+
+| arquivo | conteúdo | duração | frames | tamanho |
+|---|---|---|---|---|
+| `tinyFN/integrais/tinyFN-edmonds-karp-integral-480p15.mp4` | intro + execução (BFS) | 1038,864 s | 15.583 | 120,26 MB |
+| `tinyFN/integrais/tinyFN-ford-fulkerson-dfs-integral-480p15.mp4` | intro + execução (DFS) | 889,197 s | 13.338 | 100,65 MB |
+| `tinyFN/cenas/tinyFN-edmonds-karp-intro-480p15.mp4` | `EdmondsKarpIntro_new` | 18,132 s | 272 | 0,42 MB |
+| `tinyFN/cenas/tinyFN-edmonds-karp-execucao-480p15.mp4` | `EdmondsKarpExecutionScene_new` | 1020,732 s | 15.311 | 119,80 MB |
+| `tinyFN/cenas/tinyFN-ford-fulkerson-dfs-intro-480p15.mp4` | `FordFulkersonIntro_new` | 18,132 s | 272 | 0,42 MB |
+| `tinyFN/cenas/tinyFN-ford-fulkerson-dfs-execucao-480p15.mp4` | `FordFulkersonExecutionScene_new` | 871,065 s | 13.066 | 100,20 MB |
+
+Os integrais são remux sem re-encode (`_concat_mp4.py`) e fecham **ao frame**:
+272 + 15.311 = 15.583 e 272 + 13.066 = 13.338. A fronteira intro→execução foi conferida
+pixel a pixel (`diff_medio = 0.000000` nos frames 271 e 272).
+
+**1080p60 do fluxo: autorizado** pelo usuário em 21/11/2026 e em renderização
+(`render_fluxo_1080.ps1` → `build\media-fluxo-1080`), em fila serial e a partir do código do
+commit `d46e0bd`. A entrega atual segue sendo o 480p; o 1080p60 só entra em `entregas/` depois
+do QA. Os achados cosméticos de severidade baixa do QA do 480p (sobreposição de 1–2 frames nos
+slots do `StatePanel`, folga `guia`×contadores de ~3 px, caixa do indicador de código) ficaram
+registrados para uma passada futura.
+
 ## Como regenerar
 
 ```powershell
@@ -32,6 +66,40 @@ Os integrais são a concatenação exata das cenas (soma das durações confere)
 .\.venv\Scripts\python.exe -m manim render src\prim_mst_scene_new.py   PrimLazyScene_new        -qh --media_dir build\media --disable_caching
 .\.venv\Scripts\python.exe -m manim render src\prim_mst_scene_new.py   PrimEagerScene_new       -qh --media_dir build\media --disable_caching
 ```
+
+### Fluxo máximo (480p15)
+
+```powershell
+# Gate 0 antes de renderizar
+.\.venv\Scripts\python.exe validate_flow_scenes.py     # 8/8 + sha do stages
+.\.venv\Scripts\python.exe validate_flow_layout.py    # 277 verificacoes
+
+# Fila serial EK -> DFS (a saida vai para build\media-fluxo-v4)
+.\render_fluxo_480_v4.ps1
+
+# ou cena a cena:
+.\.venv\Scripts\python.exe -m manim -ql --media_dir build\media-fluxo-v4 src\edmonds_karp_scene_new.py EdmondsKarpExecutionScene_new
+.\.venv\Scripts\python.exe -m manim -ql --media_dir build\media-fluxo-v4 src\ford_fulkerson_scene_new.py FordFulkersonExecutionScene_new
+
+# integrais (remux sem re-encode)
+.\.venv\Scripts\python.exe _concat_mp4.py entregas\tinyFN\integrais\tinyFN-edmonds-karp-integral-480p15.mp4 entregas\tinyFN\cenas\tinyFN-edmonds-karp-intro-480p15.mp4 entregas\tinyFN\cenas\tinyFN-edmonds-karp-execucao-480p15.mp4
+.\.venv\Scripts\python.exe _concat_mp4.py entregas\tinyFN\integrais\tinyFN-ford-fulkerson-dfs-integral-480p15.mp4 entregas\tinyFN\cenas\tinyFN-ford-fulkerson-dfs-intro-480p15.mp4 entregas\tinyFN\cenas\tinyFN-ford-fulkerson-dfs-execucao-480p15.mp4
+```
+
+### Fluxo máximo (1080p60)
+
+```powershell
+# Fila serial EK -> DFS (a saida vai para build\media-fluxo-1080)
+.\render_fluxo_1080.ps1
+```
+
+As 4 cenas entram em fila serial: `EdmondsKarpIntro_new`, `EdmondsKarpExecutionScene_new`,
+`FordFulkersonIntro_new`, `FordFulkersonExecutionScene_new`. Log em
+`build\logs\render_fluxo_1080.log`. ETA estimado a partir do 480p (~16-20x o tempo): ~62-78 h.
+
+Tempo medido do 480p15 (21/11/2026): EK 2h06m48s (15.311 frames) e DFS 1h41m57s (13.066 frames).
+O `exit=1` do DFS é o falso negativo conhecido do `modify_atime`, que ocorre **depois** do
+`File ready` — valide o mp4 por decodificação, nunca pelo exit code.
 
 Tempo medido de render 1080p60 (`render_1080p.log`, 16/11/2026):
 
@@ -68,7 +136,9 @@ continuam na raiz de `manim-animations/`, um por conjunto de cenas, e usam `$PSS
 
 ## Levar para a entrega
 
-1. Render final em `build\media` (1080p60).
-2. Conferir SHA-256 e duração do mp4.
+1. Render na qualidade da entrega em `build\media*` (o 1080p60 só com aval explícito do usuário).
+2. Conferir duração, frames e que a versão do código está **commitada** (preservação é por
+   git/snapshot, não por hash local).
 3. Copiar com nome semântico para `entregas\<entrada>\cenas\` (ou `integrais\`, via `_concat_mp4.py`).
-4. Registrar a linha nova (arquivo, duração, tamanho, hash) na tabela acima.
+4. Registrar a linha nova (arquivo, duração, frames, tamanho) na tabela acima.
+5. Nada de `*.mp4` entra no git: só este README e os scripts são versionados.
