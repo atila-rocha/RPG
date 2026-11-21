@@ -51,8 +51,8 @@ COR_FUNDO = (0x0F, 0x11, 0x1A)
 TOLERANCIA = 22
 N_AMOSTRAS = 24
 
-# alvos de duração do plano V3 (§E.5/§F.2) — BFS 19,44 min · DFS 14,45 min
-ALVO = {"edmonds": 19.44 * 60, "ford": 14.45 * 60}
+# alvos de duração do plano V4 (§D.2): EK 16,90 min · DFS 14,40 min
+ALVO = {"edmonds": 16.90 * 60, "ford": 14.40 * 60}
 
 # Área do grafo (fora da caixa do guia/legenda): prova que `←f` (#ef476f) e
 # `→0` (#06d6a0) estão na TELA do grafo, não só no guia.

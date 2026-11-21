@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import textwrap
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -171,13 +172,90 @@ def fmt_marcados(estado: dict) -> str:
 
 
 def fmt_edge_to(estado: dict) -> str:
+    """`edgeTo` na ORDEM DE DESCOBERTA (a mesma fila da aba `edgeTo`)."""
     edge_to = estado.get("edge_to") or {}
+    ordem = [v for v in (estado.get("ordem_descoberta") or []) if v in edge_to]
+    restantes = [v for v in sorted(edge_to) if v not in set(ordem)]
     itens = []
-    for v in sorted(edge_to):
+    for v in ordem + restantes:
         u, w = edge_to[v]
         anterior = w if u == v else u
         itens.append(f"{v}←{anterior}")
     return "edgeTo " + (" ".join(itens) if itens else SEM_VALOR)
+
+
+def estado_da_busca(passo) -> dict:
+    """Estado com o efeito da linha visível na aba `busca`.
+
+    `estado` já é pós-linha; só o push do `dfs` (chamada dentro de `if`,
+    linha pré-chamada) fica uma linha atrás — ali `estado_pos` é o pós-linha.
+    A troca é só da LISTA da pilha: contadores/inspeções continuam vindo de
+    `estado`, para nada mais andar um passo à frente.
+    """
+    est = passo.estado
+    if passo.escrita != "busca" or passo.estado_pos is None:
+        return est
+    if len(passo.estado_pos.get("pilha") or []) > len(est.get("pilha") or []):
+        return {**est, "pilha": list(passo.estado_pos["pilha"])}
+    return est
+
+
+def chips_fila(
+    itens: list[dict],
+    *,
+    x0: float,
+    y: float,
+    largura: float,
+    altura: float,
+    passo: float,
+    fonte: int,
+    fonte_sub: int | None = None,
+) -> tuple[list[VGroup], list[Arrow]]:
+    """Abstração de FILA: chips em ordem + setas no vão (geometria fixa).
+
+    Cada item é `{"texto", "sub"?, "cor", "fill", "fill_opacity"?}`. O chip é
+    um retângulo com borda na cor do papel; o subtexto (opcional) fica embaixo
+    do rótulo principal. As setas só ocupam o vão entre chips consecutivos —
+    nunca entram no chip (mesmo contrato da pilha do DFS).
+    """
+    chips: list[VGroup] = []
+    setas: list[Arrow] = []
+    for i, item in enumerate(itens):
+        centro = np.array([x0 + largura / 2 + i * passo, y, 0.0])
+        cor = item["cor"]
+        caixa = RoundedRectangle(
+            corner_radius=0.06,
+            width=largura,
+            height=altura,
+            fill_color=item.get("fill", COR_CHIP),
+            fill_opacity=item.get("fill_opacity", 1.0),
+            stroke_color=cor,
+            stroke_width=1.6,
+        ).move_to(centro)
+        textos: list[Text] = [
+            Text(item["texto"], font_size=fonte, color=COR_TEXTO)
+        ]
+        if fonte_sub is not None and item.get("sub"):
+            textos.append(
+                Text(item["sub"], font_size=fonte_sub, color=cor)
+            )
+        grupo_texto = VGroup(*textos).arrange(DOWN, buff=0.02)
+        grupo_texto.move_to(centro)
+        chips.append(VGroup(caixa, grupo_texto))
+    for i in range(1, len(itens)):
+        x_ini = x0 + largura / 2 + (i - 1) * passo + largura / 2 + 0.01
+        x_fim = x0 + largura / 2 + i * passo - largura / 2 - 0.01
+        setas.append(
+            Arrow(
+                np.array([x_ini, y, 0.0]),
+                np.array([x_fim, y, 0.0]),
+                buff=0.0,
+                stroke_width=1.2,
+                tip_length=0.05,
+                color=COR_BORDA_NO,
+            )
+        )
+    return chips, setas
 
 
 def fmt_contadores(estado: dict, max_iteracao: int) -> str:
@@ -1547,8 +1625,8 @@ GUIA_SIMBOLOS = {
     "busca_bfs": "frente = próximo a sair · fim = último a entrar",
     "busca_dfs": "base = primeiro da pilha · topo = chamada atual",
     "marcados": "marked[v] = alcançado pela residual · S* = lado da fonte",
-    "edge_to": "edgeTo[v] = aresta que descobriu v · s = fonte · t = sumidouro",
-    "adj": "▸ sai de v · ◂ entra de v · chip = w · f/C",
+    "edge_to": "edgeTo[v] = aresta que descobriu v · fila = ordem de descoberta · frente = 1º",
+    "adj": "adj[v] · fila de inspeção · frente = 1ª aresta do for · ▸sai ◂entra",
 }
 
 COR_TAB_ATIVA = "#1f2637"
@@ -1561,24 +1639,103 @@ Y_CAPTION = -1.52
 Y_CABECALHO = -1.80
 
 
+@lru_cache(maxsize=None)
+def _faixa_gargalo(algoritmo: str) -> tuple[int, int]:
+    """Linhas do bloco de gargalo do `__init__` (bottle = min(...)).
+
+    Derivadas do ast do fonte real: o laço MAIS INTERNO que contém
+    `residual_capacity_to` (`while v != s`) e as atribuições de preparo
+    imediatamente acima (`bottle = inf`, `v = t`). É a janela em que a aba
+    `edgeTo` (a fila de descoberta) é o sujeito.
+    """
+    modulo, _inicio, _fim = rec.TRECHOS[algoritmo]
+    classe = "FordFulkerson" if algoritmo == "edmonds_karp" else "FordFulkersonDFS"
+    arvore = ast.parse(rec.arquivo_modulo(modulo).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        if not (isinstance(no, ast.ClassDef) and no.name == classe):
+            continue
+        for filho in no.body:
+            if not (isinstance(filho, ast.FunctionDef) and filho.name == "__init__"):
+                continue
+            # Vários `while` ancestrais contêm a chamada; o laço do gargalo é
+            # o MENOR deles (o mais interno), não o `while has_augmenting_path`.
+            candidatos: list[tuple[int, ast.While]] = []
+            for sub in ast.walk(filho):
+                if not isinstance(sub, ast.While):
+                    continue
+                if any(
+                    isinstance(chamada, ast.Call)
+                    and getattr(chamada.func, "attr", "") == "residual_capacity_to"
+                    for chamada in ast.walk(sub)
+                ):
+                    candidatos.append((sub.end_lineno - sub.lineno, sub))
+            if not candidatos:
+                continue
+            _span, laco = min(candidatos, key=lambda par: par[0])
+            inicio = laco.lineno
+
+            # Sobe para o bloco que contém o laço e inclui o preparo contíguo
+            # (sem linha em branco/comentário no meio) que o antecede.
+            pai = next(
+                (
+                    ancestral
+                    for ancestral in ast.walk(filho)
+                    if any(item is laco for item in ast.iter_child_nodes(ancestral))
+                ),
+                None,
+            )
+            corpo = None
+            if pai is not None:
+                for campo in ("body", "orelse", "finalbody"):
+                    lista = getattr(pai, campo, None)
+                    if isinstance(lista, list) and any(item is laco for item in lista):
+                        corpo = lista
+                        break
+            if corpo is not None:
+                idx = next(i for i, item in enumerate(corpo) if item is laco)
+                for anterior in reversed(corpo[:idx]):
+                    fim_ant = getattr(anterior, "end_lineno", None) or anterior.lineno
+                    if inicio - fim_ant <= 1:
+                        inicio = anterior.lineno
+                    else:
+                        break
+            return inicio, laco.end_lineno
+    raise LookupError(f"{modulo}: não achei o laço do gargalo em {classe}.__init__")
+
+
 def aba_do_passo(passo, aba_anterior: str) -> str:
     """Aba determinística do passo (§C.4) — cobre 100 % dos passos."""
+    if passo.escrita is not None:  # a linha ESCREVE uma estrutura → a aba dela
+        return passo.escrita
     fn, ln = passo.funcao, passo.linha
     if fn in ("FlowNetwork.__init__", "FlowNetwork.add_edge"):
-        return "adj"  # janela de montagem da Bag
+        return "adj"  # janela de montagem da lista de adjacência
     if fn in ("FlowNetwork.adj", "FlowNetwork.validate_vertex") or fn.startswith("FlowEdge."):
         return aba_anterior  # getter/validador: herda do chamador
     if fn.endswith("has_augmenting_path") or fn.endswith(".dfs"):
         return "busca"
     if fn.endswith("__init__"):  # FordFulkerson.__init__
-        return "edge_to" if 46 <= ln <= 53 else "rede"
+        algoritmo = (
+            "edmonds_karp" if fn.startswith("FordFulkerson.") else "ford_fulkerson_dfs"
+        )
+        inicio, fim = _faixa_gargalo(algoritmo)
+        return "edge_to" if inicio <= ln <= fim else "rede"
     if fn.endswith(("check", "in_cut", "validate")):
         return "marcados"
     return "rede"
 
 
-def fundir_runs(abas, min_run: int = 2) -> list[str]:
-    """Histerese da aba: run mais curto que `min_run` vira a aba anterior."""
+def fundir_runs(
+    abas, min_run: int = 2, protegidos: list[bool] | None = None
+) -> list[str]:
+    """Histerese da aba: run mais curto que `min_run` vira a aba anterior.
+
+    `protegidos[i]` marca a posição i como escrita de estrutura: um run de
+    1 passo protegido nunca é engolido — e um run de 1 passo imediatamente
+    APÓS um protegido também não (o passo escrito não "puxa" a linha
+    seguinte para a sua aba; é o vetor `["b","b","e","b"]` do plano).
+    Sem `protegidos`, o comportamento antigo é idêntico.
+    """
     saida = list(abas)
     i = 0
     while i < len(saida):
@@ -1586,8 +1743,12 @@ def fundir_runs(abas, min_run: int = 2) -> list[str]:
         while j < len(saida) and saida[j] == saida[i]:
             j += 1
         if (j - i) < min_run and i > 0:
-            for k in range(i, j):
-                saida[k] = saida[i - 1]
+            protegido = bool(protegidos) and any(protegidos[i:j])
+            if protegidos:
+                protegido = protegido or bool(protegidos[i - 1])
+            if not protegido:
+                for k in range(i, j):
+                    saida[k] = saida[i - 1]
         i = j
     return saida
 
@@ -1600,7 +1761,7 @@ def calcular_abas(algoritmo: str, passos) -> list[str]:
         atual = aba_do_passo(passo, anterior)
         abas.append(atual)
         anterior = atual
-    return fundir_runs(abas, 2)
+    return fundir_runs(abas, 2, [p.escrita is not None for p in passos])
 
 
 class _AbaRede:
@@ -1752,10 +1913,8 @@ class _AbaBusca:
         self.mobjects: list[Mobject] = []
         self.frente: Text | None = None
         self.fim: Text | None = None
-        self.edge_to: Text | None = None
-        self.marcados: Text | None = None
         self.inspecoes: Text | None = None
-        self.conteudos = {"edgeTo": "", "marcados": "", "inspecoes": ""}
+        self.conteudos = {"inspecoes": ""}
         self.estaticos: list[Mobject] = []
         self.caption: Text | None = None
 
@@ -1803,7 +1962,7 @@ class _AbaBusca:
     # -- montagem ----------------------------------------------------------
 
     def construir(self, passo) -> list[Mobject]:
-        est = passo.estado
+        est = estado_da_busca(passo)
         self.chips, self.setas = {}, {}
         self.mobjects = []
 
@@ -1840,21 +1999,15 @@ class _AbaBusca:
             self.fim.move_to(np.array([self._x(0), -2.60, 0.0])).set_opacity(0.0)
         self.mobjects += [self.frente, self.fim]
 
+        # A aba `busca` NÃO repete os textos de `edgeTo`/`marcados` (V4 §B.4):
+        # a estrutura escrita por cada linha tem a sua própria aba.
         x_info = X0_ESTRUTURA + 3.60
-        self.edge_to = Text(fmt_edge_to(est), font_size=10, color=COR_TEXTO)
-        self.edge_to.move_to(np.array([x_info, -2.02, 0.0]), aligned_edge=LEFT)
-        self.marcados = Text(fmt_marcados(est), font_size=10, color=PALETA["alcancado"][0])
-        self.marcados.move_to(np.array([x_info, -2.30, 0.0]), aligned_edge=LEFT)
         self.inspecoes = Text(
             f"inspeções {est['inspecoes']}", font_size=10, color=COR_BORDA_NO
         )
         self.inspecoes.move_to(np.array([x_info, -2.58, 0.0]), aligned_edge=LEFT)
-        self.mobjects += [self.edge_to, self.marcados, self.inspecoes]
-        self.conteudos = {
-            "edgeTo": fmt_edge_to(est),
-            "marcados": fmt_marcados(est),
-            "inspecoes": f"inspeções {est['inspecoes']}",
-        }
+        self.mobjects.append(self.inspecoes)
+        self.conteudos = {"inspecoes": f"inspeções {est['inspecoes']}"}
         return list(self.mobjects)
 
     # -- atualização -------------------------------------------------------
@@ -1868,7 +2021,7 @@ class _AbaBusca:
         )
 
     def sincronizar(self, passo):
-        est = passo.estado
+        est = estado_da_busca(passo)
         lista = self._lista(est)
         anims: list[Animation] = []
         adicionar: list[Mobject] = []
@@ -1886,6 +2039,17 @@ class _AbaBusca:
                 self.chips[v] = chip
                 adicionar.append(chip)
                 anims.append(FadeIn(chip, run_time=RITMO["play"]))
+                # V4 §B.5: a adição realça o vértice que acabou de entrar
+                anims.append(
+                    Flash(
+                        pos,
+                        color=COR_ACENTO,
+                        line_length=0.14,
+                        num_lines=8,
+                        flash_radius=0.26,
+                        line_stroke_width=2,
+                    )
+                )
             elif not np.allclose(self.chips[v].get_center(), pos, atol=1e-6):
                 anims.append(self.chips[v].animate.move_to(pos))
 
@@ -1922,21 +2086,14 @@ class _AbaBusca:
             ]
 
         x_info = X0_ESTRUTURA + 3.60
-        for chave, mob, texto, cor in (
-            ("edgeTo", self.edge_to, fmt_edge_to(est), COR_TEXTO),
-            ("marcados", self.marcados, fmt_marcados(est), PALETA["alcancado"][0]),
-            ("inspecoes", self.inspecoes, f"inspeções {est['inspecoes']}", COR_BORDA_NO),
-        ):
-            if texto != self.conteudos[chave]:
-                novo, anim = self._troca(mob, texto, mob.get_left(), cor)
-                anims.append(anim)
-                self.conteudos[chave] = texto
-                if chave == "edgeTo":
-                    self.edge_to = novo
-                elif chave == "marcados":
-                    self.marcados = novo
-                else:
-                    self.inspecoes = novo
+        texto = f"inspeções {est['inspecoes']}"
+        if texto != self.conteudos["inspecoes"]:
+            novo, anim = self._troca(
+                self.inspecoes, texto, self.inspecoes.get_left(), COR_BORDA_NO
+            )
+            anims.append(anim)
+            self.conteudos["inspecoes"] = texto
+            self.inspecoes = novo
         return anims, adicionar, remover
 
     def todos(self) -> list[Mobject]:
@@ -1948,8 +2105,6 @@ class _AbaBusca:
             *self.setas.values(),
             self.frente,
             self.fim,
-            self.edge_to,
-            self.marcados,
             self.inspecoes,
         ]
         return [m for m in vivos if m is not None]
@@ -2043,12 +2198,23 @@ class _AbaMarcados:
                 continue
             chip, texto = self.chips[v], self.textos[v]
             if marcado:
+                # V4 §B.5: estilo aplicado na hora (o alvo do Indicate é a
+                # cópia viva do chip) e a adição realçada por Flash+Indicate
+                # dentro do play do passo — sem tempo extra.
+                self._aplicar_estilo(v, True)
                 anims.append(
-                    chip.animate.set_fill(
-                        PALETA["alcancado"][0], opacity=0.22
-                    ).set_stroke(color=PALETA["alcancado"][0], width=1.6)
+                    Flash(
+                        chip.get_center(),
+                        color=PALETA["alcancado"][0],
+                        line_length=0.12,
+                        num_lines=8,
+                        flash_radius=0.30,
+                        line_stroke_width=2,
+                    )
                 )
-                anims.append(texto.animate.set_color(COR_TEXTO))
+                anims.append(
+                    Indicate(chip, color=PALETA["alcancado"][0], scale_factor=1.12)
+                )
             else:
                 anims.append(
                     chip.animate.set_fill(COR_CHIP, opacity=1.0).set_stroke(
@@ -2091,23 +2257,46 @@ class _AbaMarcados:
 
 
 class _AbaEdgeTo:
-    """`edgeTo[]`: `v | pai | nível (derivado)` + caminho s→t e gargalo."""
+    """`edgeTo[]` como FILA DE DESCOBERTA + caminho s→t e gargalo.
 
-    COLUNAS = (0.0, 0.55, 1.30)
-    PASSO_LINHA = 0.22
+    A fila é a árvore real na ordem em que o algoritmo a construiu
+    (`estado["ordem_descoberta"]`): frente = 1º descoberto (a origem),
+    fim = último descoberto. Cada chip mostra `v` e o pai `←pai`. A cor da
+    borda é o papel do vértice no passo (caminho/alcancado/neutro).
+
+    V4 §A: o bloco `caminho`/`gargalo` fica SEMPRE abaixo da fila
+    (`X_INFO = X0_ESTRUTURA`), no vão entre o `fim` e o guia — com 6 chips a
+    fila termina em +0.42 e não colide mais com o texto.
+    V4 §B.5: a fila é incremental por VÉRTICE (`chips`), com `Flash` na
+    adição — nada é reconstruído a cada passo.
+    """
+
+    LARGURA = 0.72
+    ALTURA = 0.42
+    PASSO = 0.86
+    # `chips_fila` recebe a BORDA esquerda; o primeiro chip fica centrado em
+    # x0 + LARGURA/2. O recuo garante a borda dentro do corpo (x0 da estrutura).
+    X_FILA = X0_ESTRUTURA + 0.40
+    Y_FILA = -2.10
+    X_INFO = X0_ESTRUTURA          # -5.00 (era X0_ESTRUTURA + 5.14)
+    Y_CAMINHO = -2.74              # era -2.02
+    Y_GARGALO = -2.96              # era -2.30
 
     def __init__(self, painel):
         self.p = painel
-        self.pais: dict[int, Text] = {}
-        self.niveis: dict[int, Text] = {}
-        self.valores_pai: dict[int, str] = {}
-        self.valores_nivel: dict[int, str] = {}
+        self.chips: dict[int, VGroup] = {}
+        self.estilos: dict[int, tuple] = {}
+        self.setas: dict[int, Arrow] = {}
+        self.frente: Text | None = None
+        self.fim: Text | None = None
+        self.vazio: Text | None = None
         self.caption: Text | None = None
         self.caminho: Text | None = None
         self.gargalo: Text | None = None
         self.conteudo_caminho = ""
         self.conteudo_gargalo = ""
-        self.estaticos: list[Mobject] = []
+        self.ordem: list[int] = []
+        self._rotulos_visiveis = False
 
     def _pai(self, estado: dict, v: int):
         aresta = (estado.get("edge_to") or {}).get(v)
@@ -2116,135 +2305,292 @@ class _AbaEdgeTo:
         u, w = aresta
         return w if u == v else u
 
-    def _textos(self, estado: dict, v: int) -> tuple[str, str]:
-        pai = self._pai(estado, v)
-        nivel = (estado.get("nivel") or {}).get(v)
-        return (
-            "—" if pai is None else str(pai),
-            "—" if nivel is None else str(nivel),
+    def _itens(self, estado: dict) -> list[dict]:
+        self.ordem = list(estado.get("ordem_descoberta") or [])
+        caminho = set()
+        for u, v in estado.get("caminho") or []:
+            caminho.update((u, v))
+        marcados = set(estado.get("marcados") or [])
+        itens: list[dict] = []
+        for v in self.ordem:
+            pai = self._pai(estado, v)
+            if v in caminho:
+                cor, opacidade = PALETA["caminho"][0], 0.22
+            elif v in marcados:
+                cor, opacidade = PALETA["alcancado"][0], 0.18
+            else:
+                cor, opacidade = COR_BORDA_NO, 1.0
+            itens.append(
+                {
+                    "texto": str(v),
+                    "sub": "s" if pai is None else f"←{pai}",
+                    "cor": cor,
+                    "fill": COR_CHIP if opacidade == 1.0 else cor,
+                    "fill_opacity": opacidade,
+                }
+            )
+        return itens
+
+    @staticmethod
+    def _estilo(item: dict) -> tuple:
+        return (item["cor"], item["fill"], item["fill_opacity"])
+
+    def _alvo(self, i: int):
+        return np.array(
+            [
+                self.X_FILA + self.LARGURA / 2 + i * self.PASSO,
+                self.Y_FILA,
+                0.0,
+            ]
         )
+
+    def _chip(self, item: dict) -> VGroup:
+        chips, _setas = chips_fila(
+            [item],
+            x0=0.0,
+            y=0.0,
+            largura=self.LARGURA,
+            altura=self.ALTURA,
+            passo=self.PASSO,
+            fonte=11,
+            fonte_sub=8,
+        )
+        return chips[0]
+
+    def _ponta_seta(self, i: int):
+        centro_ant = self.X_FILA + self.LARGURA / 2 + (i - 1) * self.PASSO
+        centro = self.X_FILA + self.LARGURA / 2 + i * self.PASSO
+        inicio = np.array([centro_ant + self.LARGURA / 2 + 0.01, self.Y_FILA, 0.0])
+        fim = np.array([centro - self.LARGURA / 2 - 0.01, self.Y_FILA, 0.0])
+        return inicio, fim
+
+    def _seta(self, i: int) -> Arrow:
+        inicio, fim = self._ponta_seta(i)
+        return Arrow(
+            inicio,
+            fim,
+            buff=0.0,
+            stroke_width=1.2,
+            tip_length=0.05,
+            color=COR_BORDA_NO,
+        )
+
+    def _pos_fim(self, n: int):
+        x = self.X_FILA + self.LARGURA / 2 + max(0, n - 1) * self.PASSO
+        return np.array([x, self.Y_FILA - 0.35, 0.0])
+
+    def _animar_estilo(self, chip: VGroup, estilo: tuple) -> list[Animation]:
+        """Troca cor/preenchimento/opacidade do chip e a cor do subtexto."""
+        cor, fill, opacidade = estilo
+        anims: list[Animation] = [
+            chip[0].animate.set_fill(fill, opacity=opacidade).set_stroke(
+                color=cor, width=1.6
+            )
+        ]
+        if len(chip[1].submobjects) > 1:
+            anims.append(chip[1].submobjects[1].animate.set_color(cor))
+        return anims
+
+    def _montar_fila(self, itens: list[dict]) -> list[Mobject]:
+        """Montagem completa (primeiro frame da aba); a troca é incremental."""
+        self.chips, self.estilos, self.setas = {}, {}, {}
+        self.vazio = None
+        mobs: list[Mobject] = []
+        for i, item in enumerate(itens):
+            v = int(item["texto"])
+            chip = self._chip(item).move_to(self._alvo(i))
+            self.chips[v] = chip
+            self.estilos[v] = self._estilo(item)
+            mobs.append(chip)
+        for i in range(1, len(itens)):
+            seta = self._seta(i)
+            self.setas[i] = seta
+            mobs.append(seta)
+        if not itens:
+            self.vazio = Text("∅ fila vazia", font_size=10, color=COR_BORDA_NO)
+            self.vazio.move_to(
+                np.array([self.X_FILA + 0.06, self.Y_FILA, 0.0]),
+                aligned_edge=LEFT,
+            )
+            mobs.append(self.vazio)
+
+        self.frente = Text("frente", font_size=9, color=COR_BORDA_NO)
+        self.frente.move_to(
+            np.array([self.X_FILA + self.LARGURA / 2, self.Y_FILA + 0.35, 0.0])
+        )
+        self.fim = Text("fim", font_size=9, color=COR_BORDA_NO)
+        self.fim.move_to(self._pos_fim(len(itens)))
+        self._rotulos_visiveis = bool(itens)
+        if not itens:
+            self.frente.set_opacity(0.0)
+            self.fim.set_opacity(0.0)
+        mobs += [self.frente, self.fim]
+        return mobs
 
     def construir(self, passo) -> list[Mobject]:
         est = passo.estado
-        self.pais, self.niveis = {}, {}
-        self.valores_pai, self.valores_nivel = {}, {}
-        self.estaticos = []
-        mobs: list[Mobject] = []
-
-        self.caption = Text("edgeTo[] · caminho s→t", font_size=9, color=COR_BORDA_NO)
+        self.caption = Text(
+            "edgeTo[] · fila de descoberta · frente = 1º descoberto",
+            font_size=9,
+            color=COR_BORDA_NO,
+        )
         self.caption.move_to(np.array([X0_ESTRUTURA, Y_CAPTION, 0.0]), aligned_edge=LEFT)
-        mobs.append(self.caption)
-
-        for i, nome in enumerate(("v", "pai", "nível (derivado)")):
-            cab = Text(nome, font_size=9, color=COR_BORDA_NO)
-            cab.move_to(
-                np.array([X0_ESTRUTURA + self.COLUNAS[i], Y_CABECALHO, 0.0]),
-                aligned_edge=LEFT,
-            )
-            mobs.append(cab)
-            self.estaticos.append(cab)
-
-        for v in range(rec.V_REDE):
-            y = -2.00 - v * self.PASSO_LINHA
-            rotulo = Text(str(v), font_size=9, color=COR_TEXTO)
-            rotulo.move_to(
-                np.array([X0_ESTRUTURA + self.COLUNAS[0], y, 0.0]), aligned_edge=LEFT
-            )
-            pai, nivel = self._textos(est, v)
-            t_pai = Text(pai, font_size=9, color=COR_TEXTO)
-            t_pai.move_to(
-                np.array([X0_ESTRUTURA + self.COLUNAS[1], y, 0.0]), aligned_edge=LEFT
-            )
-            t_nivel = Text(nivel, font_size=9, color=COR_TEXTO)
-            t_nivel.move_to(
-                np.array([X0_ESTRUTURA + self.COLUNAS[2], y, 0.0]), aligned_edge=LEFT
-            )
-            self.pais[v], self.niveis[v] = t_pai, t_nivel
-            self.valores_pai[v], self.valores_nivel[v] = pai, nivel
-            # O rotulo da linha (o "v") tambem e conteudo vivo da aba: sem
-            # isto ele sobrevive ao FadeOut da troca e fica escrito por cima
-            # da aba seguinte.
-            self.estaticos.append(rotulo)
-            mobs += [rotulo, t_pai, t_nivel]
+        itens = self._itens(est)
+        mobs: list[Mobject] = [self.caption, *self._montar_fila(itens)]
 
         self.conteudo_caminho = fmt_caminho(est.get("caminho"))
         self.caminho = Text(self.conteudo_caminho, font_size=10, color=PALETA["caminho"][0])
         self.caminho.move_to(
-            np.array([X0_ESTRUTURA + 2.70, -2.30, 0.0]), aligned_edge=LEFT
+            np.array([self.X_INFO, self.Y_CAMINHO, 0.0]), aligned_edge=LEFT
         )
         self.conteudo_gargalo = f"b = {fmt_num(est.get('gargalo'))}"
         self.gargalo = Text(self.conteudo_gargalo, font_size=10, color=COR_TEXTO)
         self.gargalo.move_to(
-            np.array([X0_ESTRUTURA + 2.70, -2.58, 0.0]), aligned_edge=LEFT
+            np.array([self.X_INFO, self.Y_GARGALO, 0.0]), aligned_edge=LEFT
         )
         mobs += [self.caminho, self.gargalo]
         return mobs
 
+    def _troca_texto(
+        self, atual: Text, texto: str, pos, cor: str, fonte: int = 10
+    ) -> tuple[Text, Animation]:
+        novo = Text(texto, font_size=fonte, color=cor)
+        novo.move_to(pos, aligned_edge=LEFT)
+        return novo, AnimationGroup(
+            FadeOut(atual, run_time=RITMO["play"]),
+            FadeIn(novo, run_time=RITMO["play"]),
+        )
+
     def sincronizar(self, passo):
         est = passo.estado
+        itens = self._itens(est)
         anims: list[Animation] = []
-        for v in range(rec.V_REDE):
-            pai, nivel = self._textos(est, v)
-            if pai != self.valores_pai[v]:
-                novo = Text(pai, font_size=9, color=COR_TEXTO)
-                novo.move_to(self.pais[v].get_center())
-                anims.append(
-                    AnimationGroup(
-                        FadeOut(self.pais[v], run_time=RITMO["play"]),
-                        FadeIn(novo, run_time=RITMO["play"]),
-                    )
-                )
-                self.pais[v] = novo
-                self.valores_pai[v] = pai
-            if nivel != self.valores_nivel[v]:
-                novo = Text(nivel, font_size=9, color=COR_TEXTO)
-                novo.move_to(self.niveis[v].get_center())
-                anims.append(
-                    AnimationGroup(
-                        FadeOut(self.niveis[v], run_time=RITMO["play"]),
-                        FadeIn(novo, run_time=RITMO["play"]),
-                    )
-                )
-                self.niveis[v] = novo
-                self.valores_nivel[v] = nivel
+        adicionar: list[Mobject] = []
+        remover: list[Mobject] = []
 
+        alvo = {
+            int(item["texto"]): (self._alvo(i), item)
+            for i, item in enumerate(itens)
+        }
+        # 1) chips que saíram
+        for v in list(self.chips):
+            if v not in alvo:
+                chip = self.chips.pop(v)
+                self.estilos.pop(v, None)
+                remover.append(chip)
+                anims.append(FadeOut(chip, run_time=RITMO["play"]))
+
+        # 2) chips novos (FadeIn + Flash), 3) índice (move) e 4) estilo
+        for v, (pos, item) in alvo.items():
+            estilo = self._estilo(item)
+            if v not in self.chips:
+                chip = self._chip(item).move_to(pos)
+                self.chips[v] = chip
+                self.estilos[v] = estilo
+                adicionar.append(chip)
+                anims.append(FadeIn(chip, run_time=RITMO["play"]))
+                # V4 §B.5: realce da adição (parâmetros do plano; neste
+                # Manim o `stroke_width` do Flash é `line_stroke_width`)
+                anims.append(
+                    Flash(
+                        pos,
+                        color=COR_ACENTO,
+                        line_length=0.14,
+                        num_lines=8,
+                        flash_radius=0.26,
+                        line_stroke_width=2,
+                    )
+                )
+                continue
+            chip = self.chips[v]
+            if not np.allclose(chip.get_center(), pos, atol=1e-6):
+                # `animate.move_to` no grupo + `animate` no filho no mesmo play
+                # se anulam; mover na hora é determinístico e não há movimento
+                # de chip no trace (a descoberta sempre ACRESCENTA no fim).
+                chip.move_to(pos)
+            if self.estilos[v] != estilo:
+                anims += self._animar_estilo(chip, estilo)
+                self.estilos[v] = estilo
+
+        # 5) setas por ÍNDICE no gutter: sobras saem, novas entram e TODAS
+        # recebem put_start_and_end_on na geometria atual (V3 §D.2).
+        indices = set(range(1, len(itens)))
+        for i in list(self.setas):
+            if i not in indices:
+                seta = self.setas.pop(i)
+                remover.append(seta)
+                anims.append(FadeOut(seta, run_time=RITMO["play"]))
+        for i in sorted(indices):
+            if i not in self.setas:
+                seta = self._seta(i)
+                self.setas[i] = seta
+                adicionar.append(seta)
+                anims.append(FadeIn(seta, run_time=RITMO["play"]))
+            else:
+                inicio, fim = self._ponta_seta(i)
+                self.setas[i].put_start_and_end_on(inicio, fim)
+
+        # 6) rótulos frente/fim e o estado vazio
+        if itens:
+            if self.vazio is not None:
+                remover.append(self.vazio)
+                anims.append(FadeOut(self.vazio, run_time=RITMO["play"]))
+                self.vazio = None
+            if not self._rotulos_visiveis:
+                anims.append(self.frente.animate.set_opacity(1.0))
+                anims.append(self.fim.animate.set_opacity(1.0))
+                self._rotulos_visiveis = True
+            pos_fim = self._pos_fim(len(itens))
+            if not np.allclose(self.fim.get_center(), pos_fim, atol=1e-6):
+                anims.append(self.fim.animate.move_to(pos_fim))
+        else:
+            if self.vazio is None:
+                self.vazio = Text("∅ fila vazia", font_size=10, color=COR_BORDA_NO)
+                self.vazio.move_to(
+                    np.array([self.X_FILA + 0.06, self.Y_FILA, 0.0]),
+                    aligned_edge=LEFT,
+                )
+                adicionar.append(self.vazio)
+                anims.append(FadeIn(self.vazio, run_time=RITMO["play"]))
+            if self._rotulos_visiveis:
+                anims.append(self.frente.animate.set_opacity(0.0))
+                anims.append(self.fim.animate.set_opacity(0.0))
+                self._rotulos_visiveis = False
+
+        # 7) caminho/gargalo: só trocam quando o TEXTO muda, no mesmo x/y
         caminho = fmt_caminho(est.get("caminho"))
         if caminho != self.conteudo_caminho:
-            novo = Text(caminho, font_size=10, color=PALETA["caminho"][0])
-            novo.move_to(
-                np.array([X0_ESTRUTURA + 2.70, -2.30, 0.0]), aligned_edge=LEFT
+            novo, anim = self._troca_texto(
+                self.caminho,
+                caminho,
+                np.array([self.X_INFO, self.Y_CAMINHO, 0.0]),
+                PALETA["caminho"][0],
             )
-            anims.append(
-                AnimationGroup(
-                    FadeOut(self.caminho, run_time=RITMO["play"]),
-                    FadeIn(novo, run_time=RITMO["play"]),
-                )
-            )
+            anims.append(anim)
             self.caminho = novo
             self.conteudo_caminho = caminho
 
         gargalo = f"b = {fmt_num(est.get('gargalo'))}"
         if gargalo != self.conteudo_gargalo:
-            novo = Text(gargalo, font_size=10, color=COR_TEXTO)
-            novo.move_to(
-                np.array([X0_ESTRUTURA + 2.70, -2.58, 0.0]), aligned_edge=LEFT
+            novo, anim = self._troca_texto(
+                self.gargalo,
+                gargalo,
+                np.array([self.X_INFO, self.Y_GARGALO, 0.0]),
+                COR_TEXTO,
             )
-            anims.append(
-                AnimationGroup(
-                    FadeOut(self.gargalo, run_time=RITMO["play"]),
-                    FadeIn(novo, run_time=RITMO["play"]),
-                )
-            )
+            anims.append(anim)
             self.gargalo = novo
             self.conteudo_gargalo = gargalo
-        return anims, [], []
+        return anims, adicionar, remover
 
     def todos(self) -> list[Mobject]:
         vivos = [
             self.caption,
-            *self.estaticos,
-            *self.pais.values(),
-            *self.niveis.values(),
+            *self.chips.values(),
+            *self.setas.values(),
+            self.frente,
+            self.fim,
+            self.vazio,
             self.caminho,
             self.gargalo,
         ]
@@ -2252,24 +2598,33 @@ class _AbaEdgeTo:
 
 
 class _AbaAdj:
-    """`adj[]`: a Bag REAL de cada vértice, na ordem LIFO, sem ordenar."""
+    """`adj[]` como FILA DE INSPEÇÃO: a ordem real do `for e in g.adj(v)`.
 
-    PASSO_CHIP = 0.70
+    A lista de cada vértice entra na ordem em que o algoritmo a percorre
+    (`insert(0, e)` = LIFO). O `▸` marca a FRENTE da fila: a primeira aresta
+    que o `for` examina. As setas só ocupam o vão entre chips.
+    """
+
+    LARGURA = 0.66
+    ALTURA = 0.24
+    PASSO_CHIP = 0.78
     PASSO_LINHA = 0.25
 
     def __init__(self, painel):
         self.p = painel
         self.chips: dict[int, list[VGroup]] = {}
         self.textos: dict[int, list[Text]] = {}
+        self.setas: dict[int, list[Arrow]] = {}
         self.assinaturas: dict[int, tuple] = {}
         self.caption: Text | None = None
         self.labels: dict[int, Text] = {}
+        self.frentes: dict[int, Text] = {}
         self.conteudo_caption = ""
         self.estaticos: list[Mobject] = []
 
     def _texto_caption(self, estado: dict) -> str:
         n = sum(len(lista) for lista in (estado.get("adj") or {}).values())
-        texto = f"adj[] · Bag real (LIFO) · {n} entradas (2E=16)"
+        texto = f"adj[] · fila de inspeção · {n} entradas (2E=16)"
         if n < 16:
             texto += " · em construção"
         return texto
@@ -2291,31 +2646,34 @@ class _AbaAdj:
             )
         return tuple(itens)
 
-    def _chips_de(self, entradas, v: int, assinatura) -> list[VGroup]:
-        grupos: list[VGroup] = []
-        for i, (w, saida, cap, fluxo, em_foco) in enumerate(assinatura):
-            chip = RoundedRectangle(
-                corner_radius=0.05,
-                width=0.66,
-                height=0.24,
-                fill_color=COR_CHIP,
-                fill_opacity=1.0,
-                stroke_color=PALETA["exame"][0] if em_foco else COR_BORDA_NO,
-                stroke_width=1.6 if em_foco else 0.0,
-            ).move_to(
-                np.array([X0_ESTRUTURA + 0.42 + i * self.PASSO_CHIP, -1.78 - v * self.PASSO_LINHA, 0.0])
-            )
+    def _chips_de(self, v: int, assinatura) -> tuple[list[VGroup], list[Arrow]]:
+        itens = []
+        for w, saida, cap, fluxo, em_foco in assinatura:
             sinal = "▸" if saida else "◂"
-            texto = Text(
-                f"{sinal}{w} · {fluxo:g}/{cap:g}", font_size=11, color=COR_TEXTO
-            ).move_to(chip.get_center())
-            grupos.append(VGroup(chip, texto))
-        return grupos
+            itens.append(
+                {
+                    "texto": f"{sinal}{w} · {fluxo:g}/{cap:g}",
+                    "cor": PALETA["exame"][0] if em_foco else COR_BORDA_NO,
+                    "fill": COR_CHIP,
+                    "fill_opacity": 1.0,
+                }
+            )
+        return chips_fila(
+            itens,
+            x0=X0_ESTRUTURA + 0.42,
+            y=-1.78 - v * self.PASSO_LINHA,
+            largura=self.LARGURA,
+            altura=self.ALTURA,
+            passo=self.PASSO_CHIP,
+            fonte=11,
+        )
 
     def construir(self, passo) -> list[Mobject]:
         est = passo.estado
         self.chips, self.textos, self.assinaturas = {}, {}, {}
+        self.setas = {}
         self.labels = {}
+        self.frentes = {}
         self.estaticos = []
 
         self.conteudo_caption = self._texto_caption(est)
@@ -2331,12 +2689,19 @@ class _AbaAdj:
             self.labels[v] = rotulo
             mobs.append(rotulo)
 
+            frente = Text("▸", font_size=9, color=COR_BORDA_NO)
+            frente.move_to(np.array([X0_ESTRUTURA + 0.22, y, 0.0]))
+            self.frentes[v] = frente
+            mobs.append(frente)
+
             assinatura = self._assinatura(est, v, foco)
             self.assinaturas[v] = assinatura
-            grupos = self._chips_de((est.get("adj") or {}).get(v) or [], v, assinatura)
+            grupos, setas = self._chips_de(v, assinatura)
             self.chips[v] = grupos
-            self.textos[v] = [g[1] for g in grupos]
+            self.setas[v] = setas
+            self.textos[v] = [g[1].submobjects[0] for g in grupos]
             mobs.extend(grupos)
+            mobs.extend(setas)
         return mobs
 
     def sincronizar(self, passo):
@@ -2353,13 +2718,20 @@ class _AbaAdj:
             for grupo in self.chips[v]:
                 remover.append(grupo)
                 anims.append(FadeOut(grupo, run_time=RITMO["play"]))
-            grupos = self._chips_de((est.get("adj") or {}).get(v) or [], v, assinatura)
+            for seta in self.setas[v]:
+                remover.append(seta)
+                anims.append(FadeOut(seta, run_time=RITMO["play"]))
+            grupos, setas = self._chips_de(v, assinatura)
             self.chips[v] = grupos
-            self.textos[v] = [g[1] for g in grupos]
+            self.setas[v] = setas
+            self.textos[v] = [g[1].submobjects[0] for g in grupos]
             self.assinaturas[v] = assinatura
             for grupo in grupos:
                 adicionar.append(grupo)
                 anims.append(FadeIn(grupo, run_time=RITMO["play"]))
+            for seta in setas:
+                adicionar.append(seta)
+                anims.append(FadeIn(seta, run_time=RITMO["play"]))
 
         caption = self._texto_caption(est)
         if caption != self.conteudo_caption:
@@ -2380,7 +2752,9 @@ class _AbaAdj:
             self.caption,
             *self.estaticos,
             *self.labels.values(),
+            *self.frentes.values(),
             *[g for grupos in self.chips.values() for g in grupos],
+            *[s for setas in self.setas.values() for s in setas],
         ]
         return [m for m in vivos if m is not None]
 
@@ -2427,6 +2801,9 @@ class EstruturaPanel:
             "adj": _AbaAdj(self),
         }
         self.ativa: str | None = None
+        # Estado da busca visto pelo passo anterior (§B.6 rev. 4.1): base do
+        # diff que decide qual elemento acabou de entrar na aba.
+        self.estado_anterior: dict | None = None
         self.contadores: Text | None = None
         self.texto_contadores = ""
         self.guia: Text | None = None
@@ -2457,14 +2834,23 @@ class EstruturaPanel:
             self.abas_visuais[chave] = (caixa, texto)
 
     def _estilo_abas(self, ativa: str) -> list[Animation]:
+        # Ritmo: estas animações dividem o `play(*sai_aba)` com os `FadeOut` do
+        # conteúdo antigo, que usam `RITMO["fade"]`. `mobject.animate` sem
+        # `run_time` explícito vira `_MethodAnimation` com o default de 1,0 s e
+        # esticava a troca de aba inteira (bug de ritmo v4.2). O `run_time` vai
+        # no construtor do builder: `animate(run_time=...)`.
         anims: list[Animation] = []
         for chave, (caixa, texto) in self.abas_visuais.items():
             on = chave == ativa
             anims += [
-                caixa.animate.set_stroke(
+                caixa.animate(run_time=RITMO["fade"])
+                .set_stroke(
                     COR_ACENTO if on else COR_BORDA_NO, width=1.6 if on else 1.2
-                ).set_fill(COR_TAB_ATIVA if on else COR_TAB_INATIVA, opacity=1.0),
-                texto.animate.set_color(WHITE if on else COR_BORDA_NO),
+                )
+                .set_fill(COR_TAB_ATIVA if on else COR_TAB_INATIVA, opacity=1.0),
+                texto.animate(run_time=RITMO["fade"]).set_color(
+                    WHITE if on else COR_BORDA_NO
+                ),
             ]
         return anims
 
@@ -2505,6 +2891,7 @@ class EstruturaPanel:
 
     def preparar(self, passo) -> list[Mobject]:
         self._i = 0
+        self.estado_anterior = estado_da_busca(passo)
         alvo = self._alvo(passo)
         self.ativa = alvo
         self._aplicar_abas(alvo)
@@ -2539,12 +2926,47 @@ class EstruturaPanel:
             novos = self.conteudos[alvo].construir(passo)
             self.guia = self._criar_guia(alvo)
             novos.append(self.guia)
-            anims = self._atualizar_contadores(passo)
+            # Rev. 4.1 (§B.6): o FadeIn do corpo é fundo; o Flash do elemento
+            # novo entra aqui para tocar no play seguinte ao fade-in, dentro do
+            # `run_time` que já existe — sem play nem tempo extra.
+            anims = self._realce(passo) + self._atualizar_contadores(passo)
+            self.estado_anterior = estado_da_busca(passo)
             return anims, [], [], (sai, novos)
 
         anims, adicionar, remover = self.conteudos[alvo].sincronizar(passo)
         anims += self._atualizar_contadores(passo)
+        self.estado_anterior = estado_da_busca(passo)
         return anims, adicionar, remover, None
+
+    def _realce(self, passo) -> list[Animation]:
+        """Flash do elemento que ESTA linha acrescentou à aba (rev. 4.1)."""
+        aba = self.ativa
+        if aba not in ("edge_to", "marcados", "busca") or passo.escrita != aba:
+            return []
+        ant = self.estado_anterior or {}
+        if aba == "edge_to":
+            novos = set(passo.estado.get("ordem_descoberta") or []) - set(
+                ant.get("ordem_descoberta") or [])
+            cor, linha, raio = COR_ACENTO, 0.14, 0.26
+        elif aba == "marcados":
+            novos = set(passo.estado.get("marcados") or []) - set(
+                ant.get("marcados") or [])
+            cor, linha, raio = PALETA["alcancado"][0], 0.12, 0.30
+        else:
+            chave = "pilha" if self.algoritmo == "ford_fulkerson_dfs" else "fila"
+            novos = set(estado_da_busca(passo).get(chave) or []) - set(
+                ant.get(chave) or [])
+            cor, linha, raio = COR_ACENTO, 0.14, 0.26
+        if len(novos) != 1:            # reset/reconstrução: o corpo inteiro basta
+            return []
+        alvo = self.conteudos[aba].chips.get(next(iter(novos)))
+        if alvo is None:
+            return []
+        anims = [Flash(alvo.get_center(), color=cor, line_length=linha,
+                       num_lines=8, flash_radius=raio, line_stroke_width=2)]
+        if aba == "marcados":
+            anims.append(Indicate(alvo, color=cor, scale_factor=1.12))
+        return anims
 
     def _atualizar_contadores(self, passo) -> list[Animation]:
         texto = fmt_contadores(passo.estado, self.max_iteracao)

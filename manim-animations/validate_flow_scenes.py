@@ -102,9 +102,10 @@ CAPACIDADES_GOLDEN = {
     (4, 5): 3.0,
 }
 
-# Inspeções de aresta acumuladas: a BFS esvazia a fila (16/16/16/16/5) e a
-# DFS para ao alcançar `t` (3/4/7/8/5).
-INSPECOES_GOLDEN = {"edmonds_karp": 69, "ford_fulkerson_dfs": 27}
+# Inspeções de aresta acumuladas. A BFS do algs4 tem SAÍDA ANTECIPADA
+# (`while queue and not marked[t]`): para assim que marca `t`
+# (11/11/11/11/5). A DFS também para ao alcançar `t` (3/4/7/8/5).
+INSPECOES_GOLDEN = {"edmonds_karp": 49, "ford_fulkerson_dfs": 27}
 
 CORTE_GOLDEN = [0, 2]
 
@@ -343,6 +344,55 @@ def testar_invariantes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# b2) Fila de descoberta (`edgeTo` como abstração de fila)
+# ---------------------------------------------------------------------------
+
+
+def testar_fila_descoberta() -> None:
+    """`ordem_descoberta` é a fila REAL: começa em s e cobre o `edgeTo`.
+
+    A aba `edgeTo` desenha esta ordem (frente = 1º descoberto). Ela tem de
+    casar com a árvore do trace em todo passo, sem repetição e sem vértice
+    inventado. `marked[]` pode ficar uma linha atrás (`edgeTo[w] = e` roda
+    antes de `marked[w] = True`), então a referência é o `edgeTo`.
+    """
+    for nome in ("edmonds_karp", "ford_fulkerson_dfs"):
+        for rotulo, coletor in (("compacto", rec.coletar), ("detalhado", rec.coletar_detalhado)):
+            passos = coletor(nome)
+            anterior: rec.Step | None = None
+            for i, passo in enumerate(passos):
+                est = passo.estado
+                ordem = est["ordem_descoberta"]
+                verificar(
+                    len(ordem) == len(set(ordem)),
+                    f"{nome} ({rotulo})[{i}]: fila de descoberta com repetição: {ordem}",
+                )
+                # A fila é a árvore do `edgeTo` MAIS a origem (que não tem pai).
+                verificar(
+                    set(ordem) - {est["s"]} == set(est["edge_to"]),
+                    f"{nome} ({rotulo})[{i}]: fila {ordem} != edgeTo {sorted(est['edge_to'])}",
+                )
+                if ordem:
+                    verificar(
+                        ordem[0] == est["s"],
+                        f"{nome} ({rotulo})[{i}]: a fila não começa em s: {ordem}",
+                    )
+                for v in ordem[1:]:
+                    verificar(
+                        v in est["edge_to"],
+                        f"{nome} ({rotulo})[{i}]: {v} na fila sem edgeTo[{v}]",
+                    )
+                if anterior is not None and anterior.estado["iteracao"] == est["iteracao"]:
+                    antes = anterior.estado["ordem_descoberta"]
+                    verificar(
+                        ordem[: len(antes)] == antes,
+                        f"{nome} ({rotulo})[{i}]: a fila andou para trás "
+                        f"({antes} -> {ordem})",
+                    )
+                anterior = passo
+
+
+# ---------------------------------------------------------------------------
 # c) Determinismo
 # ---------------------------------------------------------------------------
 
@@ -358,6 +408,7 @@ def assinatura(passos: list[rec.Step]) -> list[tuple]:
             round(float(p.estado["valor"]), 9),
             tuple(sorted((a, round(f, 9)) for a, f in p.estado["fluxos"].items())),
             tuple(p.estado["marcados"]),
+            tuple(p.estado["ordem_descoberta"]),
             tuple(p.estado["fila"]),
             tuple(p.estado["pilha"]),
             p.estado["inspecoes"],
@@ -389,25 +440,25 @@ LINHAS_OBRIGATORIAS = {
         ("algs4.ford_fulkerson", "FordFulkerson.__init__"): {32, 46, 52, 58, 61, 64},
         ("algs4.ford_fulkerson", "FordFulkerson.has_augmenting_path"): {75, 82, 83, 88, 90, 95},
         ("algs4.ford_fulkerson", "FordFulkerson.excess"): {99, 100, 102, 105},
-        ("algs4.ford_fulkerson", "FordFulkerson.is_feasible"): {109, 111, 116, 124, 130},
-        ("algs4.ford_fulkerson", "FordFulkerson.check"): {134, 147, 150, 152, 156},
-        ("algs4.flow_edge", "FlowEdge.other"): {56, 57},
-        ("algs4.flow_edge", "FlowEdge.residual_capacity_to"): {64, 65, 67},
-        ("algs4.flow_edge", "FlowEdge.add_residual_flow_to"): {72, 74, 77},
+        ("algs4.ford_fulkerson", "FordFulkerson.is_feasible"): {109, 111, 117, 125, 131},
+        ("algs4.ford_fulkerson", "FordFulkerson.check"): {135, 148, 151, 153, 157},
+        ("algs4.flow_edge", "FlowEdge.other"): {57, 58},
+        ("algs4.flow_edge", "FlowEdge.residual_capacity_to"): {65, 66, 68},
+        ("algs4.flow_edge", "FlowEdge.add_residual_flow_to"): {73, 75, 78},
         ("algs4.flow_network", "FlowNetwork.__init__"): {121, 125, 131},
         ("algs4.flow_network", "FlowNetwork.add_edge"): {152, 156, 158},
         ("algs4.flow_network", "FlowNetwork.adj"): {161, 162},
     },
     "ford_fulkerson_dfs": {
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.__init__"): {32, 46, 52, 58, 61, 64},
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.has_augmenting_path"): {75, 79, 80, 83},
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.dfs"): {86, 87, 88, 92, 96, 98},
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.excess"): {102, 103, 105, 108},
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.is_feasible"): {112, 114, 119, 127, 133},
-        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.check"): {137, 150, 153, 155, 159},
-        ("algs4.flow_edge", "FlowEdge.other"): {56, 57},
-        ("algs4.flow_edge", "FlowEdge.residual_capacity_to"): {64, 65, 67},
-        ("algs4.flow_edge", "FlowEdge.add_residual_flow_to"): {72, 74, 77},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.__init__"): {33, 47, 53, 59, 62, 65},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.has_augmenting_path"): {76, 80, 81, 84},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.dfs"): {87, 88, 89, 93, 97, 99},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.excess"): {103, 104, 105, 109},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.is_feasible"): {113, 115, 120, 131, 134},
+        ("algs4.ford_fulkerson_dfs", "FordFulkersonDFS.check"): {138, 151, 154, 156, 160},
+        ("algs4.flow_edge", "FlowEdge.other"): {57, 58},
+        ("algs4.flow_edge", "FlowEdge.residual_capacity_to"): {65, 66, 68},
+        ("algs4.flow_edge", "FlowEdge.add_residual_flow_to"): {73, 75, 78},
         ("algs4.flow_network", "FlowNetwork.__init__"): {121, 125, 131},
         ("algs4.flow_network", "FlowNetwork.add_edge"): {152, 156, 158},
         ("algs4.flow_network", "FlowNetwork.adj"): {161, 162},
@@ -582,17 +633,437 @@ def testar_funcoes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# g) Estado pós-linha (`estado_pos`) e `escrita` derivada do AST
+# ---------------------------------------------------------------------------
+
+# O `stages` é o contrato entre o gravador e o QA: os campos aditivos
+# `estado_pos`/`escrita` NÃO entram nele. Se este sha mudar, a animação
+# existente deixou de ser a mesma — pare e reporte em vez de reexportar.
+SHA_STAGES_ESPERADO = "c19ee524057409482c65b7dbac8bbc89124e3e802a53566c0d9b59540f792a3a"
+
+
+def _nome_do_alvo(alvo: ast.AST) -> str | None:
+    """Nome do atributo/name de um alvo de atribuição."""
+    if isinstance(alvo, ast.Name):
+        return alvo.id
+    if isinstance(alvo, ast.Attribute):
+        return alvo.attr
+    if isinstance(alvo, ast.Subscript):
+        return _nome_do_alvo(alvo.value)
+    return None
+
+
+def _metodo_da_chamada(no: ast.AST) -> str | None:
+    if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute):
+        return no.func.attr
+    return None
+
+
+def _base_da_chamada(no: ast.AST) -> str | None:
+    if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute):
+        return _nome_do_alvo(no.func.value)
+    return None
+
+
+def _escrita_do_no(no: ast.AST, funcao: str) -> str | None:
+    """Aba escrita por um nó do AST — a MESMA regra do gravador, conferida
+    aqui de forma independente (sem números de linha digitados)."""
+    if isinstance(no, ast.Assign):
+        for alvo in no.targets:
+            nome = _nome_do_alvo(alvo)
+            if nome in ("edgeTo", "marked"):
+                return "edge_to" if nome == "edgeTo" else "marcados"
+            if nome == "_adj":
+                return "adj"
+            if funcao == "FlowEdge.__init__" and nome in ("v", "w", "capacity", "flow"):
+                return "rede"
+            if nome in ("value", "flow"):
+                return "rede"
+            if nome == "queue" and isinstance(alvo, ast.Name):
+                return "busca"
+            if funcao == "FlowNetwork.add_edge" and nome == "E":
+                return "adj"
+        if _metodo_da_chamada(no.value) == "popleft" and _base_da_chamada(no.value) == "queue":
+            return "busca"
+        return None
+    if isinstance(no, ast.AugAssign):
+        nome = _nome_do_alvo(no.target)
+        if nome in ("value", "flow"):
+            return "rede"
+        if funcao == "FlowNetwork.add_edge" and nome == "E":
+            return "adj"
+        return None
+    if isinstance(no, ast.Call):
+        metodo = _metodo_da_chamada(no)
+        base = _base_da_chamada(no)
+        if metodo in ("append", "popleft") and base == "queue":
+            return "busca"
+        if metodo == "dfs" and base == "self":
+            return "busca"
+        if metodo == "insert" and base == "_adj":
+            return "adj"
+        return None
+    if isinstance(no, ast.Return) and funcao.endswith(".dfs"):
+        return "busca"
+    return None
+
+
+def _escrita_derivada_ast(modulo: str, funcao: str, linha: int) -> str | None:
+    """Aba que o AST manda para esta linha, ou None se a linha só lê."""
+    arvore = ast.parse(rec.arquivo_modulo(modulo).read_text(encoding="utf-8"))
+    encontrada = None
+    for no in ast.walk(arvore):
+        if getattr(no, "lineno", None) != linha:
+            continue
+        escrita = _escrita_do_no(no, funcao)
+        if escrita is None:
+            continue
+        if encontrada is not None and encontrada != escrita:
+            raise Falha(
+                f"{modulo}:{linha}: o AST classifica a linha como "
+                f"{encontrada!r} e {escrita!r}"
+            )
+        encontrada = escrita
+    return encontrada
+
+
+def _indice_do_subscript(modulo: str, linha: int) -> str | None:
+    """Nome do índice de `self.x[nome]` na linha (ex.: `s`, `w`)."""
+    arvore = ast.parse(rec.arquivo_modulo(modulo).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        if not isinstance(no, ast.Assign) or no.lineno != linha:
+            continue
+        alvo = no.targets[0]
+        if isinstance(alvo, ast.Subscript) and isinstance(alvo.slice, ast.Name):
+            return alvo.slice.id
+    return None
+
+
+def _arg_da_chamada(modulo: str, linha: int, metodo: str, indice: int) -> str | None:
+    """Nome do argumento `indice` da chamada `metodo` na linha."""
+    arvore = ast.parse(rec.arquivo_modulo(modulo).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        if not isinstance(no, ast.Call) or no.lineno != linha:
+            continue
+        if _metodo_da_chamada(no) != metodo or len(no.args) <= indice:
+            continue
+        arg = no.args[indice]
+        if isinstance(arg, ast.Name):
+            return arg.id
+    return None
+
+
+def _valor_do_nome(estado: dict, nome: str | None) -> int | None:
+    if nome == "s":
+        return estado.get("s_frame")
+    if nome == "w":
+        return estado.get("w")
+    if nome == "v":
+        return estado.get("v")
+    return None
+
+
+def _forma_do_value(modulo: str, linha: int) -> str | None:
+    """`zero`, `excess` ou `augment` para as linhas que escrevem `self.value`."""
+    arvore = ast.parse(rec.arquivo_modulo(modulo).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Assign) and no.lineno == linha:
+            if _nome_do_alvo(no.targets[0]) != "value":
+                continue
+            if isinstance(no.value, ast.Constant) and no.value.value == 0.0:
+                return "zero"
+            if _metodo_da_chamada(no.value) == "excess":
+                return "excess"
+        if isinstance(no, ast.AugAssign) and no.lineno == linha:
+            if _nome_do_alvo(no.target) == "value":
+                return "augment"
+    return None
+
+
+def _verificar_efeito_escrita(
+    nome: str,
+    i: int,
+    passo: rec.Step,
+    anterior: rec.Step | None,
+    tipo: str,
+) -> None:
+    """O efeito da escrita aparece no `estado_pos` (e, quando o próximo passo
+    sobrescreve, no próprio `estado` pós-linha)."""
+    est = passo.estado
+    pos = passo.estado_pos
+    rotulo = f"{nome}[{i}] {passo.funcao}:{passo.linha} ({passo.escrita}/{tipo})"
+    verificar(pos is not None, f"{rotulo}: estado_pos vazio")
+
+    if passo.escrita == "edge_to":
+        if tipo == "reset":
+            # O reset é o efeito do PRÓPRIO passo; o passo seguinte pode
+            # sobrescrever (DFS: `marked[s] = True` logo depois do reset de
+            # `marked`). O `estado` pós-linha é onde ele aparece.
+            verificar(
+                est["edge_to"] == {},
+                f"{rotulo}: edgeTo pós-linha não zerado: {est['edge_to']}",
+            )
+        else:
+            indice = _indice_do_subscript(passo.modulo, passo.linha)
+            w = _valor_do_nome(est, indice)
+            e = est.get("e")
+            verificar(w is not None and e is not None, f"{rotulo}: sem w/e no estado")
+            verificar(
+                pos["edge_to"].get(w) == e,
+                f"{rotulo}: edgeTo[{w}] pós-linha = {pos['edge_to'].get(w)} != {e}",
+            )
+
+    elif passo.escrita == "marcados":
+        if tipo == "reset":
+            verificar(
+                est["marcados"] == [],
+                f"{rotulo}: marcados pós-linha não zerados: {est['marcados']}",
+            )
+        else:
+            indice = _indice_do_subscript(passo.modulo, passo.linha)
+            w = _valor_do_nome(est, indice)
+            verificar(w is not None, f"{rotulo}: sem {indice} no estado")
+            verificar(
+                w in pos["marcados"],
+                f"{rotulo}: {w} não está em marcados pós-linha: {pos['marcados']}",
+            )
+
+    elif passo.escrita == "busca":
+        if tipo == "init":
+            # O passo seguinte já faz o primeiro append; a fila vazia é o
+            # estado pós-linha do PRÓPRIO passo, não do estado_pos.
+            verificar(
+                est["fila"] == [],
+                f"{rotulo}: fila pós-linha não nasceu vazia: {est['fila']}",
+            )
+        elif tipo == "append":
+            indice = _arg_da_chamada(passo.modulo, passo.linha, "append", 0)
+            w = _valor_do_nome(est, indice)
+            verificar(w is not None, f"{rotulo}: sem argumento do append")
+            verificar(
+                pos["fila"][-1:] == [w],
+                f"{rotulo}: fila pós-linha = {pos['fila']}, esperado {w} no fim",
+            )
+        elif tipo == "popleft":
+            v = est.get("v")
+            verificar(v is not None, f"{rotulo}: sem v do popleft")
+            verificar(
+                v not in pos["fila"],
+                f"{rotulo}: {v} ainda está na fila pós-linha: {pos['fila']}",
+            )
+            verificar(
+                anterior is not None and v in anterior.estado["fila"],
+                f"{rotulo}: {v} não estava na fila antes do popleft",
+            )
+        elif tipo == "dfs":
+            indice = _arg_da_chamada(passo.modulo, passo.linha, "dfs", 1)
+            w = _valor_do_nome(est, indice)
+            verificar(w is not None, f"{rotulo}: sem argumento do dfs")
+            verificar(
+                w in pos["pilha"],
+                f"{rotulo}: {w} não entrou na pilha pós-linha: {pos['pilha']}",
+            )
+        elif tipo == "return":
+            verificar(anterior is not None, f"{rotulo}: return sem passo anterior")
+            esperado = anterior.estado["pilha"][:-1]
+            verificar(
+                est["pilha"] == esperado,
+                f"{rotulo}: pilha pós-return = {est['pilha']} != {esperado}",
+            )
+            # O próximo passo pode desempilhar mais (return do chamador) ou
+            # empilhar de novo (outra chamada dfs); o prefixo tem de bater.
+            menor = min(len(pos["pilha"]), len(est["pilha"]))
+            verificar(
+                pos["pilha"][:menor] == est["pilha"][:menor],
+                f"{rotulo}: estado_pos desfez o pop: {pos['pilha']} vs {est['pilha']}",
+            )
+
+    elif passo.escrita == "adj":
+        if tipo == "init":
+            verificar(
+                set(pos["adj"]) == set(range(est["V"])),
+                f"{rotulo}: adj pós-linha sem uma lista por vértice",
+            )
+            verificar(
+                all(not lista for lista in pos["adj"].values()),
+                f"{rotulo}: adj pós-linha não nasceu vazia",
+            )
+        else:
+            # Em `self.E += 1` (última linha de `add_edge`) o próximo evento
+            # já é do chamador e o `e` saiu do frame; a aresta vem do passo
+            # anterior (o `insert`), que é o mesmo objeto.
+            e = est.get("e")
+            if e is None and anterior is not None:
+                e = anterior.estado.get("e")
+            verificar(e is not None, f"{rotulo}: sem aresta `e` no estado")
+            u, v = e
+
+            def tem(vertice: int, outro: int) -> bool:
+                return any(entrada["w"] == outro for entrada in pos["adj"].get(vertice, []))
+
+            verificar(
+                tem(u, v) or tem(v, u),
+                f"{rotulo}: aresta {u}->{v} não está na adj pós-linha",
+            )
+
+    elif passo.escrita == "rede":
+        if tipo == "value":
+            forma = _forma_do_value(passo.modulo, passo.linha)
+            if forma == "zero":
+                verificar(
+                    abs(pos["valor"]) < EPS,
+                    f"{rotulo}: valor pós-linha = {pos['valor']} != 0",
+                )
+            elif forma == "excess":
+                t = pos["t"]
+                excesso = sum(
+                    f for (_u, w), f in pos["fluxos"].items() if w == t
+                ) - sum(f for (u, _w), f in pos["fluxos"].items() if u == t)
+                verificar(
+                    abs(pos["valor"] - excesso) < EPS,
+                    f"{rotulo}: valor pós-linha {pos['valor']} != excesso({t}) {excesso}",
+                )
+            elif forma == "augment":
+                verificar(anterior is not None, f"{rotulo}: augment sem passo anterior")
+                bottle = est.get("bottle")
+                verificar(bottle is not None, f"{rotulo}: sem bottle no estado")
+                esperado = anterior.estado["valor"] + bottle
+                verificar(
+                    abs(pos["valor"] - esperado) < EPS,
+                    f"{rotulo}: |f| pós-linha {pos['valor']} != {esperado}",
+                )
+        elif tipo == "flow":
+            aux = est.get("aux") or {}
+            u, v = aux.get("v"), aux.get("w")
+            verificar(u is not None and v is not None, f"{rotulo}: sem aresta no aux")
+            fluxo = pos["fluxos"].get((u, v))
+            verificar(fluxo is not None, f"{rotulo}: aresta {u}->{v} fora do estado")
+            # A linha `self.flow = 0.0` / `= capacity` tem valor fechado;
+            # `+=`/`-=` partem do fluxo do passo anterior.
+            valor_ast = None
+            arvore = ast.parse(rec.arquivo_modulo(passo.modulo).read_text(encoding="utf-8"))
+            for no in ast.walk(arvore):
+                if isinstance(no, ast.Assign) and no.lineno == passo.linha:
+                    if _nome_do_alvo(no.targets[0]) == "flow":
+                        if isinstance(no.value, ast.Constant) and no.value.value == 0.0:
+                            valor_ast = ("zero", None)
+                        elif isinstance(no.value, ast.Attribute) and no.value.attr == "capacity":
+                            valor_ast = ("capacity", None)
+            if valor_ast is not None:
+                if valor_ast[0] == "zero":
+                    verificar(
+                        abs(fluxo) < EPS,
+                        f"{rotulo}: flow pós-linha = {fluxo} != 0",
+                    )
+                else:
+                    verificar(
+                        abs(fluxo - est["capacidades"][(u, v)]) < EPS,
+                        f"{rotulo}: flow pós-linha {fluxo} != capacidade "
+                        f"{est['capacidades'][(u, v)]}",
+                    )
+            else:
+                verificar(anterior is not None, f"{rotulo}: flow sem passo anterior")
+                delta = est.get("delta")
+                verificar(delta is not None, f"{rotulo}: sem delta no estado")
+                anterior_fluxo = anterior.estado["fluxos"].get((u, v))
+                verificar(anterior_fluxo is not None, f"{rotulo}: fluxo anterior ausente")
+                sinal = 1.0
+                if passo.linha is not None:
+                    for no in ast.walk(arvore):
+                        if isinstance(no, ast.AugAssign) and no.lineno == passo.linha:
+                            if isinstance(no.op, ast.Sub):
+                                sinal = -1.0
+                esperado = anterior_fluxo + sinal * delta
+                verificar(
+                    abs(fluxo - esperado) < EPS,
+                    f"{rotulo}: flow pós-linha {fluxo} != {esperado}",
+                )
+
+
+def testar_estado_pos() -> None:
+    """`escrita` por AST e `estado_pos` = estado do passo seguinte.
+
+    Cobre as duas variantes e o modo linha a linha. Não toca no `stages`:
+    o sha esperado é conferido sobre o texto que `exportar_stages` gravaria.
+    """
+    for nome in ("edmonds_karp", "ford_fulkerson_dfs"):
+        detalhado = rec.coletar_detalhado(nome)
+        mapa = rec.mapa_escritas(nome)
+
+        for i, passo in enumerate(detalhado):
+            chave = (passo.modulo, passo.funcao, passo.linha)
+            esperada = mapa.get(chave, (None, None))[0]
+            verificar(
+                passo.escrita == esperada,
+                f"{nome}[{i}] {passo.funcao}:{passo.linha}: escrita "
+                f"{passo.escrita!r} != mapa {esperada!r}",
+            )
+            derivada = _escrita_derivada_ast(passo.modulo, passo.funcao, passo.linha)
+            verificar(
+                passo.escrita == derivada,
+                f"{nome}[{i}] {passo.funcao}:{passo.linha}: escrita "
+                f"{passo.escrita!r} != AST {derivada!r}",
+            )
+            if passo.escrita is None:
+                continue
+
+            if i == len(detalhado) - 1:
+                verificar(
+                    passo.estado_pos is None,
+                    f"{nome}[{i}]: último passo com estado_pos preenchido",
+                )
+                continue
+            verificar(
+                passo.estado_pos is not None,
+                f"{nome}[{i}] {passo.funcao}:{passo.linha}: escrita sem estado_pos",
+            )
+            verificar(
+                passo.estado_pos == detalhado[i + 1].estado,
+                f"{nome}[{i}] {passo.funcao}:{passo.linha}: estado_pos != "
+                "estado do passo seguinte",
+            )
+            _verificar_efeito_escrita(
+                nome,
+                i,
+                passo,
+                detalhado[i - 1] if i else None,
+                mapa[chave][1],
+            )
+
+        # Toda linha mapeada que vira passo tem `escrita` preenchida; as que
+        # não viram passo são as funções fora do painel (FlowEdge.__init__) e
+        # o ramo aleatório de FlowNetwork.__init__ (não executado com arquivo).
+        linhas_passos = {(p.modulo, p.funcao, p.linha) for p in detalhado}
+        for chave, (escrita, _tipo) in mapa.items():
+            if chave in linhas_passos:
+                achado = next(
+                    p for p in detalhado if (p.modulo, p.funcao, p.linha) == chave
+                )
+                verificar(
+                    achado.escrita == escrita,
+                    f"{nome}: {chave} mapeada como {escrita!r}, passo com {achado.escrita!r}",
+                )
+
+    texto, _destino = _montar_stages()
+    digest = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+    verificar(
+        digest == SHA_STAGES_ESPERADO,
+        f"sha do stages mudou: {digest} != {SHA_STAGES_ESPERADO}. "
+        "O contrato antigo não podia mudar; pare e reporte.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # stages.json (índice por passo, nunca por timestamp)
 # ---------------------------------------------------------------------------
 
 
-def exportar_stages() -> str:
+def _montar_stages() -> tuple[str, Path]:
     raiz = Path(__file__).resolve().parent
     ativo = rec.caminho_rede()
     padrao = ativo.resolve() == rec.REDE_PADRAO.resolve()
     nome_arquivo = "stages_fluxo.json" if padrao else f"stages_fluxo_{ativo.stem}.json"
     destino = raiz / "build" / "goldens" / nome_arquivo
-    destino.parent.mkdir(parents=True, exist_ok=True)
 
     dados = {}
     for nome in ("edmonds_karp", "ford_fulkerson_dfs"):
@@ -615,6 +1086,7 @@ def exportar_stages() -> str:
                         f"{u}->{w}": r for (u, w), r in p.estado["residual_reversa"].items()
                     },
                     "marcados": list(p.estado["marcados"]),
+                    "ordem_descoberta": list(p.estado["ordem_descoberta"]),
                     "edge_to": {str(k): list(v) for k, v in p.estado["edge_to"].items()},
                     "caminho": [list(e) for e in p.estado["caminho"]],
                     "gargalo": p.estado["gargalo"],
@@ -630,6 +1102,12 @@ def exportar_stages() -> str:
             ]
 
     texto = json.dumps(dados, indent=2, ensure_ascii=False)
+    return texto, destino
+
+
+def exportar_stages() -> str:
+    texto, destino = _montar_stages()
+    destino.parent.mkdir(parents=True, exist_ok=True)
     destino.write_text(texto, encoding="utf-8")
     digest = hashlib.sha256(texto.encode("utf-8")).hexdigest()
     print(f"stages gravado em {destino}")
@@ -642,9 +1120,11 @@ def main() -> int:
         ("entrada .txt", testar_entrada),
         ("golden", testar_golden),
         ("invariantes", testar_invariantes),
+        ("fila de descoberta", testar_fila_descoberta),
         ("determinismo", testar_determinismo),
         ("linha a linha", testar_detalhado),
         ("funções de código", testar_funcoes),
+        ("estado pós-linha", testar_estado_pos),
     ]
     falhas = 0
     for nome, fn in testes:

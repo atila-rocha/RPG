@@ -157,8 +157,18 @@ class FordFulkersonIntro_new(Scene):
         inspecoes_bfs = rec.coletar("edmonds_karp")[-1].estado["inspecoes"]
         self.play(FadeOut(texto3), FadeOut(rotulo_rev), run_time=0.3)
         texto4 = VGroup(
-            Text("O laço com DFS", font_size=16, color=COR_ACENTO, weight=BOLD),
-            Text("pilha: desce até t, sem garantia de caminho curto", font_size=13, color=COR_TEXTO),
+            Text(
+                "Ford-Fulkerson puro — NÃO usa Edmonds-Karp",
+                font_size=15,
+                color=PALETA["reversa"][0],
+                weight=BOLD,
+            ),
+            Text("a busca é DFS (pilha), não BFS", font_size=13, color=COR_TEXTO),
+            Text(
+                "desce até t, sem garantia de caminho curto",
+                font_size=13,
+                color=COR_TEXTO,
+            ),
             Text(
                 f"{int(final['inspecoes'])} inspeções (DFS) vs {int(inspecoes_bfs)} (BFS)",
                 font_size=13,

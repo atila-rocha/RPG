@@ -1,9 +1,9 @@
 """Portão de geometria da cena de fluxo — roda ANTES de qualquer render.
 
 Não desenha nada: monta os mesmos mobjects da cena (`flow_common`) e mede.
-Sai com código 1 se qualquer item do contrato do `PLANO_VISUAL_FLUXO_V3.md`
-falhar (§A guia de símbolos, §B paginação, §C bloco do grafo, §D setas da
-pilha, §E selo do `validate_vertex`, §F validadores).
+Sai com código 1 se qualquer item do contrato do `PLANO_VISUAL_FLUXO_V4.md`
+falhar (§A geometria do bloco da `edgeTo`, §B escrita manda na aba, §D
+sequência/ritmo, §E testes de escrita, selo e aba `busca` sem textos).
 
 Uso:
     python validate_flow_layout.py
@@ -12,6 +12,7 @@ Uso:
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,6 +93,45 @@ def _mobjects_saindo(anims) -> set[int]:
         if isinstance(anim, FadeOut) and getattr(anim, "mobject", None) is not None:
             ids.add(id(anim.mobject))
     return ids
+
+
+def _tipos_animacao(anims) -> dict[str, int]:
+    """Conta classes de animação; `Flash` vem ANTES de `AnimationGroup`."""
+    from collections import Counter
+
+    from manim import AnimationGroup, Flash
+
+    contagem: Counter[str] = Counter()
+    pilha = list(anims)
+    while pilha:
+        anim = pilha.pop()
+        if isinstance(anim, Flash):
+            contagem["Flash"] += 1
+        elif isinstance(anim, AnimationGroup):
+            pilha.extend(anim.animations)
+        else:
+            contagem[type(anim).__name__] += 1
+    return dict(contagem)
+
+
+PARES_EDGE_TO = [
+    # (papel_a, papel_b, folga) — V4 §A.4; folga 0 = encostar não é colidir.
+    ("chip", "caminho", 0.00),
+    ("chip", "gargalo", 0.00),
+    ("chip", "seta", 0.00),
+    ("chip", "fim", 0.00),
+    ("seta", "caminho", 0.00),
+    ("seta", "gargalo", 0.00),
+    ("caminho", "fim", 0.00),
+    ("gargalo", "fim", 0.00),
+    ("caminho", "gargalo", 0.04),
+    ("caminho", "guia", 0.05),
+    ("gargalo", "guia", 0.05),
+    ("caminho", "contadores", 0.02),
+    ("gargalo", "contadores", 0.02),
+    ("bloco", "caption", 0.04),
+]
+
 
 class Portao:
     def __init__(self, algoritmo: str):
@@ -345,7 +385,7 @@ class Portao:
             f"{codigo.fonte_efetiva:.2f} pt (escala {codigo.escala:.4f})",
         )
         paginas_esperadas = {
-            "edmonds_karp": (1734, 18, 14),
+            "edmonds_karp": (1510, 18, 14),
             "ford_fulkerson_dfs": (1281, 19, 15),
         }[self.algoritmo]
         self.check(
@@ -641,16 +681,15 @@ class Portao:
             all(isinstance(a, str) and a in fc.ORDEM_ABAS for a in estrutura.abas),
             str({a for a in estrutura.abas if a not in fc.ORDEM_ABAS}),
         )
-        # distribuição medida no trace depois da correção do §E.3
-        # (`validate_vertex` herda a aba do chamador): BFS 99/551/851/120/113,
-        # DFS 99/551/398/120/113.
+        # distribuição medida no trace V4 (§D.1): a `escrita` manda na aba e a
+        # fusão protege o run de escrita. EK 99/549/572/144/146 · DFS 99/549/353/139/141.
         contagem = {chave: estrutura.abas.count(chave) for chave in fc.ORDEM_ABAS}
         esperada = {
             "edmonds_karp": {
-                "rede": 551, "busca": 851, "marcados": 113, "edge_to": 120, "adj": 99,
+                "rede": 549, "busca": 572, "marcados": 144, "edge_to": 146, "adj": 99,
             },
             "ford_fulkerson_dfs": {
-                "rede": 551, "busca": 398, "marcados": 113, "edge_to": 120, "adj": 99,
+                "rede": 549, "busca": 353, "marcados": 139, "edge_to": 141, "adj": 99,
             },
         }[self.algoritmo]
         self.check(
@@ -660,26 +699,41 @@ class Portao:
         )
         self.check("cada aba tem >= 8 passos", all(n >= 8 for n in contagem.values()), str(contagem))
 
-        esperado: list[str] = []
+        # §E.1-1: a sequência CRUA (sem fusão) é `escrita or aba_do_passo`, e a
+        # fusão protege toda posição que escreve uma estrutura.
+        crua: list[str] = []
         anterior = "rede"
         for passo in passos:
-            atual = fc.aba_do_passo(passo, anterior)
-            esperado.append(atual)
+            atual = passo.escrita or fc.aba_do_passo(passo, anterior)
+            crua.append(atual)
             anterior = atual
-        esperado = fc.fundir_runs(esperado, 2)
+        protegidos = [p.escrita is not None for p in passos]
+        esperado = fc.fundir_runs(crua, 2, protegidos)
+        self.check(
+            "escrita manda na aba (sequencia crua)",
+            all(p.escrita is None or crua[i] == p.escrita for i, p in enumerate(passos)),
+        )
+        self.check(
+            "fusao nao muda nenhuma posicao com escrita",
+            all(p.escrita is None or esperado[i] == p.escrita for i, p in enumerate(passos)),
+            str([i for i, p in enumerate(passos) if p.escrita and esperado[i] != p.escrita][:5]),
+        )
         self.check("sequencia de abas deterministica", esperado == estrutura.abas)
         self.check(
-            "fundir_runs(min_run=2) usado",
-            fc.fundir_runs(["a", "b", "b", "c"], 2) == ["a", "b", "b", "b"]
+            "fundir_runs protege run de escrita (autoteste)",
+            fc.fundir_runs(["b", "e"], 2, [False, True]) == ["b", "e"]
+            and fc.fundir_runs(["b", "b", "e", "b"], 2, [False, False, True, False])
+            == ["b", "b", "e", "b"]
+            and fc.fundir_runs(["a", "b", "b", "c"], 2) == ["a", "b", "b", "b"]
             and fc.fundir_runs(["a", "b", "c"], 3) == ["a", "a", "a"],
         )
         trocas = sum(1 for a, b in zip(estrutura.abas, estrutura.abas[1:]) if a != b)
+        alvo_trocas = 99 if self.algoritmo == "edmonds_karp" else 74
         self.check(
-            "16 trocas de aba (dois plays cada)",
-            trocas == 16,
+            f"{alvo_trocas} trocas de aba (dois plays cada)",
+            trocas == alvo_trocas,
             f"{trocas} trocas",
         )
-        self.check("trocas de aba em dois plays (par)", trocas % 2 == 0, f"{trocas} trocas")
 
     def troca_aba(self, passos) -> None:
         painel = fc.EstruturaPanel(self.algoritmo, passos)
@@ -708,7 +762,7 @@ class Portao:
 
     # -- I. conteúdo das abas (dados reais do trace) ----------------------
     def conteudo_abas(self, estrutura: fc.EstruturaPanel, passos) -> None:
-        # adj: ordem REAL da Bag em 3 passos
+        # adj: FILA DE INSPEÇÃO na ordem real do `for e in g.adj(v)`
         ordens_ruins = []
         candidatos = [
             passos[0],
@@ -720,24 +774,23 @@ class Portao:
             aba.construir(passo)
             for v, chips in aba.chips.items():
                 obtido = [
-                    int(g[1].original_text.split()[0][1:]) for g in chips
+                    int(g[1].submobjects[0].original_text.split()[0][1:])
+                    for g in chips
                 ]
                 esperado = [int(e["w"]) for e in (passo.estado.get("adj") or {}).get(v, [])]
                 if obtido != esperado:
                     ordens_ruins.append((v, obtido, esperado))
-        self.check("adj na ordem real da Bag (3 passos)", not ordens_ruins, str(ordens_ruins[:2]))
+        self.check("adj na ordem real da inspeção (3 passos)", not ordens_ruins, str(ordens_ruins[:2]))
 
         legendas = [
             fc._AbaAdj(estrutura)._texto_caption(p.estado) for p in candidatos
         ]
         self.check(
-            "adj caption: Bag real/2E=16/construcao, sem simbolos (no guia)",
+            "adj caption: fila de inspeção/2E=16/construcao",
             all(
-                "adj[] · Bag real (LIFO)" in t
+                "adj[] · fila de inspeção" in t
                 and "entradas (2E=16)" in t
                 and "w · f/C" not in t
-                and "▸" not in t
-                and "◂" not in t
                 for t in legendas
             )
             and any("em construção" in t for t in legendas),
@@ -752,7 +805,7 @@ class Portao:
                 caption_larga.append(round(aba.caption.width, 3))
             for v, grupos in aba.chips.items():
                 for i, grupo in enumerate(grupos):
-                    texto = grupo[1]
+                    texto = grupo[1].submobjects[0]
                     if (
                         abs(texto.font_size - 11) > 1e-6
                         or texto.width > grupo[0].width - 0.02
@@ -764,42 +817,198 @@ class Portao:
                             box_de(grupos[i][0]), box_de(grupos[j][0]), folga=0.02
                         ):
                             chip_ruins.append((v, i, j, "colisao"))
+                # setas só no vão; uma por gutter
+                if len(aba.setas[v]) != max(0, len(grupos) - 1):
+                    chip_ruins.append((v, "setas", len(aba.setas[v])))
+                for i, seta in enumerate(aba.setas[v]):
+                    if float(seta.get_start()[0]) <= box_de(grupos[i][0])[2]:
+                        chip_ruins.append((v, i, "seta no chip"))
+                # frente à esquerda do 1º chip
+                if grupos and float(aba.frentes[v].get_right()[0]) >= box_de(grupos[0][0])[0]:
+                    chip_ruins.append((v, "frente no chip"))
         self.check(
             "adj caption cabe no corpo (<= 6,20)",
             not caption_larga, str(caption_larga),
         )
         self.check(
-            "adj chips 11 pt cabem e nao colidem",
+            "adj chips 11 pt, setas no vão e frente fora do chip",
             not chip_ruins, str(chip_ruins[:2]),
         )
 
-        # edgeTo: pai e nível (derivado) batem com o estado
-        passos_edge = [p for p in passos if p.estado.get("edge_to")]
-        self.check("existe passo com edgeTo", bool(passos_edge))
+        # edgeTo: FILA DE DESCOBERTA na ordem real do trace
+        passos_edge = [p for p in passos if p.estado.get("ordem_descoberta")]
+        self.check("existe passo com fila de descoberta", bool(passos_edge))
         if passos_edge:
             passo = passos_edge[len(passos_edge) // 2]
             aba = fc._AbaEdgeTo(estrutura)
             aba.construir(passo)
+            ordem = list(passo.estado["ordem_descoberta"])
             erros = []
-            for v in range(rec.V_REDE):
+            if list(aba.chips) != ordem:
+                erros.append(("ordem", list(aba.chips), ordem))
+            for v in ordem:
+                chip = aba.chips.get(v)
+                if chip is None:
+                    erros.append((v, "sem chip"))
+                    continue
+                textos = chip[1].submobjects
+                if textos[0].original_text != str(v):
+                    erros.append((v, textos[0].original_text, str(v)))
                 aresta = (passo.estado.get("edge_to") or {}).get(v)
-                pai = "—" if aresta is None else str(aresta[1] if aresta[0] == v else aresta[0])
-                nivel = (passo.estado.get("nivel") or {}).get(v)
-                nivel = "—" if nivel is None else str(nivel)
-                if aba.pais[v].text != pai or aba.niveis[v].text != nivel:
-                    erros.append((v, aba.pais[v].text, pai, aba.niveis[v].text, nivel))
-            self.check("edgeTo pai/nivel derivado conferem", not erros, str(erros[:2]))
+                pai = None if aresta is None else (aresta[1] if aresta[0] == v else aresta[0])
+                sub = "s" if pai is None else f"←{pai}"
+                if len(textos) < 2 or textos[1].original_text != sub:
+                    erros.append((v, "sub", textos[1].original_text if len(textos) > 1 else "", sub))
+            self.check("edgeTo: fila na ordem real, chip = v + ←pai", not erros, str(erros[:2]))
             self.check(
                 "edgeTo caminho s->t confere",
                 aba.caminho.text == fc.fmt_caminho(passo.estado.get("caminho")),
             )
             self.check(
-                "edgeTo nivel rotulado derivado",
-                any(
-                    m.original_text == "nível (derivado)"
-                    for m in aba.todos() if isinstance(m, Text)
-                ),
+                "edgeTo: frente e fim rotulam a fila",
+                aba.frente is not None
+                and aba.fim is not None
+                and aba.frente.original_text == "frente"
+                and aba.fim.original_text == "fim"
+                and aba.frente.get_center()[1] > aba.chips[ordem[0]].get_top()[1]
+                and aba.fim.get_center()[1] < aba.chips[ordem[-1]].get_bottom()[1],
             )
+            self.check(
+                "edgeTo: caption fala da fila de descoberta",
+                "fila de descoberta" in aba.caption.original_text,
+            )
+            # a fila inteira (6 chips) cabe no corpo, sem colisão
+            dentro = all(
+                fc.caixa_dentro(
+                    box_de(chip),
+                    (fc.X0_ESTRUTURA, -3.30, fc.X0_ESTRUTURA + 6.20, -1.30),
+                    0.02,
+                )
+                for chip in aba.chips.values()
+            )
+            colisoes = [
+                (a, b)
+                for i, a in enumerate(ordem)
+                for b in ordem[i + 1:]
+                if fc.caixas_colidem(box_de(aba.chips[a]), box_de(aba.chips[b]), folga=0.02)
+            ]
+            self.check("edgeTo: fila cabe no corpo e não colide", dentro and not colisoes,
+                       f"dentro={dentro} colisoes={colisoes[:2]}")
+
+        # §A.4 V4: TODOS os passos com a aba `edge_to` ativa (146 EK / 141 DFS).
+        # O ponto cego antigo comparava só chip × chip numa amostra; agora cada
+        # passo monta a aba real e mede os 14 pares do contrato.
+        indices_edge = [
+            i for i, chave in enumerate(estrutura.abas) if chave == "edge_to"
+        ]
+        guia_v4 = fc.GuiaVisual()
+        corpo = (fc.X0_ESTRUTURA, -3.20, 1.14, -1.30)
+        violacoes: dict[tuple[str, str, float], list] = {
+            par: [] for par in PARES_EDGE_TO
+        }
+        fora_corpo: list = []
+        posicoes_ruins: list = []
+        textos_ruins: list = []
+        abaixo_ruins: list = []
+        largos_ruins: list = []
+        for i in indices_edge:
+            passo = passos[i]
+            aba = fc._AbaEdgeTo(estrutura)
+            aba.construir(passo)
+            if (
+                abs(float(aba.caminho.get_left()[0]) - fc._AbaEdgeTo.X_INFO) > 1e-6
+                or abs(float(aba.caminho.get_center()[1]) - fc._AbaEdgeTo.Y_CAMINHO)
+                > 1e-6
+                or abs(float(aba.gargalo.get_left()[0]) - fc._AbaEdgeTo.X_INFO) > 1e-6
+                or abs(float(aba.gargalo.get_center()[1]) - fc._AbaEdgeTo.Y_GARGALO)
+                > 1e-6
+            ):
+                posicoes_ruins.append(i)
+            if (
+                aba.caminho.original_text != fc.fmt_caminho(passo.estado.get("caminho"))
+                or aba.gargalo.original_text
+                != f"b = {fc.fmt_num(passo.estado.get('gargalo'))}"
+            ):
+                textos_ruins.append(i)
+            contadores = Text(
+                fc.fmt_contadores(passo.estado, estrutura.max_iteracao),
+                font_size=fc.EstruturaPanel.FONTE_CONTADORES,
+                color=fc.COR_TEXTO,
+            ).move_to(
+                [fc.X0_ESTRUTURA, fc.EstruturaPanel.Y_CONTADORES, 0.0],
+                aligned_edge=LEFT,
+            )
+            caixas = {
+                "chip": [box_de(c) for c in aba.chips.values()],
+                "seta": [box_de(s) for s in aba.setas.values()],
+                "caminho": [box_de(aba.caminho)],
+                "gargalo": [box_de(aba.gargalo)],
+                "fim": [box_de(aba.fim)],
+                "caption": [box_de(aba.caption)],
+                "guia": [box_de(guia_v4.mobject)],
+                "contadores": [box_de(contadores)],
+            }
+            c_cam, c_gar = caixas["caminho"][0], caixas["gargalo"][0]
+            caixas["bloco"] = [
+                (
+                    min(c_cam[0], c_gar[0]),
+                    min(c_cam[1], c_gar[1]),
+                    max(c_cam[2], c_gar[2]),
+                    max(c_cam[3], c_gar[3]),
+                )
+            ]
+            for papel_a, papel_b, folga in PARES_EDGE_TO:
+                for caixa_a in caixas[papel_a]:
+                    for caixa_b in caixas[papel_b]:
+                        if fc.caixas_colidem(caixa_a, caixa_b, folga):
+                            violacoes[(papel_a, papel_b, folga)].append(
+                                (i, caixa_a, caixa_b)
+                            )
+            if not fc.caixa_dentro(caixas["bloco"][0], corpo, 0.0):
+                fora_corpo.append((i, "bloco", caixas["bloco"][0]))
+            if not all(
+                fc.caixa_dentro(box, corpo, 0.0)
+                for box in caixas["caminho"] + caixas["gargalo"]
+            ):
+                fora_corpo.append((i, "texto", caixas["caminho"] + caixas["gargalo"]))
+            # §A.4-2: o bloco esta ABAIXO da fila, com 0.30 de respiro.
+            if caixas["chip"]:  # fila vazia: nao ha fila para ficar abaixo
+                base_fila = min(box[1] for box in caixas["chip"])
+                if not (c_cam[3] < base_fila - 0.30):
+                    abaixo_ruins.append((i, round(c_cam[3], 3), round(base_fila, 3)))
+            # §A.4-3: nenhum texto estoura a linha (6,20).
+            for nome, box in (("caminho", c_cam), ("gargalo", c_gar)):
+                if (box[2] - box[0]) > 6.20 + 1e-6:
+                    largos_ruins.append((i, nome, round(box[2] - box[0], 3)))
+        for papel_a, papel_b, folga in PARES_EDGE_TO:
+            self.check(
+                f"edgeTo V4: {papel_a} x {papel_b} (folga {folga:.2f})",
+                not violacoes[(papel_a, papel_b, folga)],
+                f"{len(indices_edge)} passos · "
+                f"{len(violacoes[(papel_a, papel_b, folga)])} colisoes",
+            )
+        self.check(
+            "edgeTo V4: bloco sempre abaixo da fila, dentro do corpo",
+            not fora_corpo, f"{len(fora_corpo)} fora: {fora_corpo[:2]}",
+        )
+        self.check(
+            "edgeTo V4: caminho/gargalo em X_INFO/Y fixos",
+            not posicoes_ruins, f"{len(posicoes_ruins)} passos fora",
+        )
+        self.check(
+            "edgeTo V4: textos de caminho/gargalo do estado",
+            not textos_ruins, f"{len(textos_ruins)} passos",
+        )
+        self.check(
+            "edgeTo V4: bloco 0,30 abaixo da fila",
+            not abaixo_ruins,
+            f"{len(indices_edge)} passos · {abaixo_ruins[:3]}",
+        )
+        self.check(
+            "edgeTo V4: caminho/gargalo com largura <= 6,20",
+            not largos_ruins,
+            f"{len(indices_edge)} passos · {largos_ruins[:3]}",
+        )
 
         # marked: k do caption e chips acesos
         passos_marcados = [p for p in passos if p.estado.get("marcados")]
@@ -848,6 +1057,224 @@ class Portao:
             "abas sem cor nova (PALETA + estruturais)",
             cores <= CORES_PERMITIDAS,
             str(sorted(cores - CORES_PERMITIDAS)[:4]),
+        )
+
+    # -- I3. escrita manda: sem antecipacao, visivel, adicao animada --------
+    def escritas(self, estrutura: fc.EstruturaPanel, passos) -> None:
+        """§E.1-3/4/5: a linha escrita aparece NA PROPRIA linha e anima."""
+        mapa = rec.mapa_escritas(self.algoritmo)
+
+        def tipo_de(passo):
+            return mapa.get((passo.modulo, passo.funcao, passo.linha), (None, None))[1]
+
+        # 3) sem antecipacao: nos 24/19 edge_to com estado_pos["marcados"]
+        # diferente, o chip do w nao pode estar verde (a linha 91 ainda nao veio).
+        atrasados = []
+        antecipacoes = 0
+        for i, passo in enumerate(passos):
+            if passo.escrita != "edge_to" or passo.estado_pos is None:
+                continue
+            if set(passo.estado_pos.get("marcados") or []) == set(
+                passo.estado.get("marcados") or []
+            ):
+                continue
+            antecipacoes += 1
+            if tipo_de(passo) == "reset":
+                # reset->marked[s]: a fila ja esta vazia neste passo (nada verde)
+                aba = fc._AbaEdgeTo(estrutura)
+                aba.construir(passo)
+                if any(
+                    cor == fc.PALETA["alcancado"][0]
+                    for cor, _fill, _op in aba.estilos.values()
+                ):
+                    atrasados.append((i, "reset verde"))
+                continue
+            antes = set(passos[i - 1].estado.get("edge_to") or {}) if i else set()
+            novos = set(passo.estado.get("edge_to") or {}) - antes
+            if len(novos) != 1:
+                atrasados.append((i, "w", sorted(novos)))
+                continue
+            w = next(iter(novos))
+            aba = fc._AbaEdgeTo(estrutura)
+            aba.construir(passo)
+            if aba.estilos.get(w, (None,))[0] == fc.PALETA["alcancado"][0]:
+                atrasados.append((i, w, "verde"))
+        alvo_antecipacoes = 24 if self.algoritmo == "edmonds_karp" else 19
+        self.check(
+            f"{alvo_antecipacoes} edge_to nao antecipam marcados",
+            not atrasados and antecipacoes == alvo_antecipacoes,
+            f"{antecipacoes} passos · {atrasados[:3]}",
+        )
+
+        # reset -> marked[s]: a aba `marcados` no reset nao tem chip aceso
+        resets = [
+            i for i, p in enumerate(passos)
+            if p.escrita == "marcados" and not p.estado.get("marcados")
+        ]
+        acesos_reset = []
+        for i in resets:
+            aba = fc._AbaMarcados(estrutura)
+            aba.construir(passos[i])
+            if any(aba.acesos.values()):
+                acesos_reset.append(i)
+        self.check(
+            "reset de marcados nao acende chip (DFS 77->80)",
+            len(resets) == 6 and not acesos_reset,
+            f"{len(resets)} resets · {acesos_reset[:3]}",
+        )
+
+        # 4) escrita visivel na propria linha
+        ocultas = []
+        verificados = 0
+        for i, passo in enumerate(passos):
+            escrita = passo.escrita
+            if escrita not in ("edge_to", "marcados", "busca"):
+                continue
+            verificados += 1
+            tipo = tipo_de(passo)
+            est = fc.estado_da_busca(passo) if escrita == "busca" else passo.estado
+            anterior = passos[i - 1].estado if i else {}
+            if escrita == "edge_to":
+                if tipo == "reset":
+                    if est.get("edge_to"):
+                        ocultas.append((i, "edge_to reset", est.get("edge_to")))
+                else:
+                    novos = set(est.get("edge_to") or {}) - set(
+                        anterior.get("edge_to") or {}
+                    )
+                    if len(novos) != 1:
+                        ocultas.append((i, "edge_to w", sorted(novos)))
+            elif escrita == "marcados":
+                if tipo == "reset":
+                    if est.get("marcados"):
+                        ocultas.append((i, "marcados reset", est.get("marcados")))
+                else:
+                    novos = set(est.get("marcados") or []) - set(
+                        anterior.get("marcados") or []
+                    )
+                    if len(novos) != 1:
+                        ocultas.append((i, "marcados w", sorted(novos)))
+            elif tipo == "append":
+                fila = est.get("fila") or []
+                ant = anterior.get("fila") or []
+                if not fila or len(fila) <= len(ant):
+                    ocultas.append((i, "append", fila))
+            elif tipo == "popleft":
+                v = (anterior.get("fila") or [None])[0]
+                if v in (est.get("fila") or []):
+                    ocultas.append((i, "popleft", v))
+            elif tipo == "dfs":
+                if not (est.get("pilha") or []):
+                    ocultas.append((i, "dfs vazia", est.get("pilha")))
+            elif tipo == "return":
+                if passo.estado_pos is not None and passo.estado.get("pilha"):
+                    # o lookahead nao pode ACRESCENTAR a pilha; quando ele
+                    # remove, remove exatamente o topo (1 frame)
+                    if len(passo.estado_pos.get("pilha") or []) > len(
+                        passo.estado["pilha"]
+                    ):
+                        ocultas.append(
+                            (
+                                i,
+                                "return topo",
+                                passo.estado.get("pilha"),
+                                passo.estado_pos.get("pilha"),
+                            )
+                        )
+        self.check(
+            "escrita visivel na propria linha",
+            not ocultas,
+            f"{verificados} passos · {ocultas[:3]}",
+        )
+
+        # 5) adicao animada + nada pisca a toa
+        painel = fc.EstruturaPanel(self.algoritmo, passos)
+        painel.preparar(passos[0])
+        adicoes = Counter()
+        reais = 0
+        reconstrucoes = 0
+        sem_realce: list = []
+        ruins: list = []
+        pops = 0
+        pops_ok = 0
+        iguais = 0
+        piscam = []
+        for i, passo in enumerate(passos):
+            aba_antes = painel.ativa
+            anims, _add, _rem, troca = painel.atualizar(passo)
+            tipos = _tipos_animacao(anims)
+            if passo.escrita in ("edge_to", "marcados", "busca"):
+                tipo = tipo_de(passo)
+                if passo.escrita == "busca" and tipo not in ("append", "dfs"):
+                    if tipo in ("popleft", "return"):
+                        pops += 1
+                        if tipos.get("FadeOut") or troca:
+                            pops_ok += 1
+                    continue
+                adicoes[passo.escrita] += 1
+                # Rev. 4.1 (§E.1-5): o FadeIn do corpo NAO conta como realce.
+                # Adicao pontual exige `Flash`/`Indicate` do elemento novo,
+                # inclusive quando a linha tambem troca de aba; `reset` e
+                # reconstrucao da lista inteira e entra so pelo FadeIn do corpo.
+                realce = bool(tipos.get("Flash") or tipos.get("Indicate"))
+                if tipo == "reset":                 # 12/12: só FadeIn do corpo
+                    reconstrucoes += 1
+                    if realce or not troca:
+                        ruins.append((i, passo.escrita, tipo))
+                elif realce:                        # 70/55: exige Flash
+                    reais += 1
+                else:
+                    sem_realce.append((i, passo.escrita, tipo))
+            elif (
+                passo.escrita is None
+                and troca is None
+                and aba_antes in ("edge_to", "marcados")
+                and painel.ativa == aba_antes
+                and i > 0
+                and passo.estado == passos[i - 1].estado
+            ):
+                iguais += 1
+                if anims:
+                    piscam.append((i, aba_antes, passo.funcao, passo.linha))
+        alvo_adicoes = {"edmonds_karp": 82, "ford_fulkerson_dfs": 67}[self.algoritmo]
+        alvo_pops = 18 if self.algoritmo == "edmonds_karp" else 20
+        esperado_adicoes = (
+            {"edge_to": 26, "marcados": 31, "busca": 25}
+            if self.algoritmo == "edmonds_karp"
+            else {"edge_to": 21, "marcados": 26, "busca": 20}
+        )
+        alvo_reais = {"edmonds_karp": 70, "ford_fulkerson_dfs": 55}[self.algoritmo]
+        total_adicoes = sum(adicoes.values())
+        por_aba = " + ".join(f"{n} {aba}" for aba, n in esperado_adicoes.items())
+        self.check(
+            f"{alvo_adicoes} adicoes estruturais ({por_aba})",
+            total_adicoes == alvo_adicoes and dict(adicoes) == esperado_adicoes,
+            f"{dict(adicoes)} = {total_adicoes}",
+        )
+        self.check(
+            f"{alvo_reais} adicoes com Flash de UM elemento",
+            reais == alvo_reais and not sem_realce,
+            f"{reais} reais · sem realce: {sem_realce[:3]}",
+        )
+        self.check(
+            "12/12 reconstrucoes so com FadeIn do corpo",
+            reconstrucoes == 12 and not ruins,
+            f"{reconstrucoes} reconstrucoes · ruins: {ruins[:3]}",
+        )
+        self.check(
+            f"total {alvo_adicoes} = reais + reconstrucoes",
+            total_adicoes == alvo_adicoes and reais + reconstrucoes == total_adicoes,
+            f"{reais} + {reconstrucoes} = {total_adicoes}",
+        )
+        self.check(
+            f"{alvo_pops} pops so com FadeOut",
+            pops == alvo_pops and pops_ok == pops,
+            f"{pops} pops · {pops_ok} com FadeOut",
+        )
+        self.check(
+            "passo sem escrita e sem mudanca nao pisca",
+            not piscam,
+            f"{iguais} passos · {len(piscam)} piscam",
         )
 
     # -- I2. guia de símbolos (§A.2): texto exato, 5 abas, folgas ----------
@@ -935,7 +1362,8 @@ class Portao:
         for _indice, passo in escolhidos:
             aba = fc._AbaBusca(estrutura)
             aba.construir(passo)
-            lista = list(passo.estado["pilha"])
+            # a aba usa `estado_da_busca`: no push do dfs a lista ja tem o w
+            lista = list(fc.estado_da_busca(passo)["pilha"])
             if set(aba.setas) != set(range(1, len(lista))):
                 erros.append(("indices", sorted(aba.setas), len(lista)))
                 continue
@@ -963,7 +1391,12 @@ class Portao:
         # ciclo de vida: pilha grande -> pilha de 1 remove todas as setas
         grande = max(com_pilha, key=lambda par: len(par[1].estado["pilha"]))[1]
         um = next(
-            (p for p in passos if len(p.estado.get("pilha") or []) == 1), None
+            (
+                p
+                for p in passos
+                if len(fc.estado_da_busca(p).get("pilha") or []) == 1
+            ),
+            None,
         )
         if um is not None:
             aba = fc._AbaBusca(estrutura)
@@ -979,7 +1412,7 @@ class Portao:
     # -- I4. selo do `validate_vertex` (§E.4) ------------------------------
     def selo(self, painel: fc.StatePanel, passos) -> None:
         vv = [i for i, p in enumerate(passos) if p.funcao == "FlowNetwork.validate_vertex"]
-        esperado = {"edmonds_karp": 73, "ford_fulkerson_dfs": 63}[self.algoritmo]
+        esperado = {"edmonds_karp": 65, "ford_fulkerson_dfs": 63}[self.algoritmo]
         self.check(
             "todos os passos de validate_vertex entram (sem filtro)",
             len(vv) == esperado,
@@ -1059,15 +1492,29 @@ class Portao:
 
         busca = fc._AbaBusca(estrutura)
         busca.construir(passos[0])
-        velho_e = busca.edge_to
+        velho_i = busca.inspecoes
         busca.sincronizar(passos[-1])
         vivos_b = busca.todos()
         self.check(
-            "aba Busca: texto trocado sai da lista viva",
-            busca.edge_to is not velho_e
-            and busca.edge_to in vivos_b
-            and velho_e not in vivos_b,
+            "aba Busca: 'inspecoes' trocado sai da lista viva",
+            busca.inspecoes is not velho_i
+            and busca.inspecoes in vivos_b
+            and velho_i not in vivos_b,
             f"{len(vivos_b)} mobjects vivos",
+        )
+        self.check(
+            "aba Busca sem textos de edgeTo/marcados",
+            not hasattr(busca, "edge_to")
+            and not hasattr(busca, "marcados")
+            and "marcados" not in busca.conteudos
+            and "edgeTo" not in busca.conteudos,
+            str(sorted(busca.conteudos)),
+        )
+        textos_b = [t.original_text for t in vivos_b if isinstance(t, Text)]
+        self.check(
+            "aba Busca mostra 'inspecoes'",
+            any(t.split() and t.split()[0] == "inspeções" for t in textos_b),
+            str(textos_b)[:120],
         )
 
         passo_adj = next(p for p in passos if p.estado.get("adj"))
@@ -1173,9 +1620,10 @@ class Portao:
             "conteudo novo de aba nao reusa mobject removido",
             not reusados, str(reusados[:3]),
         )
+        alvo = 99 if self.algoritmo == "edmonds_karp" else 74
         self.check(
-            "16 trocas de aba por algoritmo (sem fantasma)",
-            trocas == 16, f"{trocas} trocas",
+            f"{alvo} trocas de aba por algoritmo (sem fantasma)",
+            trocas == alvo, f"{trocas} trocas",
         )
 
     # -- K. painel de estado ----------------------------------------------
@@ -1225,7 +1673,7 @@ class Portao:
 
 
 def main() -> int:
-    print(f"contrato: PLANO_VISUAL_FLUXO_V3.md · quadro {config.frame_width}x{config.frame_height}")
+    print(f"contrato: PLANO_VISUAL_FLUXO_V4.md · quadro {config.frame_width}x{config.frame_height}")
     total = 0
     falhas = 0
     for alg in ALGORITMOS:
@@ -1253,6 +1701,7 @@ def main() -> int:
         portao.abas(estrutura, passos)
         portao.troca_aba(passos)
         portao.conteudo_abas(estrutura, passos)
+        portao.escritas(estrutura, passos)
         portao.guia_simbolos(estrutura, passos)
         portao.setas(estrutura, passos)
         portao.selo(painel, passos)

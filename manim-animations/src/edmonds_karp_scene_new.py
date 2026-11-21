@@ -94,11 +94,14 @@ class EdmondsKarpIntro_new(Scene):
         caminho = est["caminho"]
         residuais = [est["residual_direta"][par] for par in caminho]
         gargalo = min(residuais)
+        extenso = "→".join(str(caminho[0][0])) + "".join(
+            f"→{v}" for _u, v in caminho
+        )
 
         self.play(FadeOut(lista), run_time=0.3)
         texto2 = VGroup(
             Text("Caminho aumentante", font_size=16, color=PALETA["caminho"][0], weight=BOLD),
-            Text(f"{rec.S_FONTE}→2→4→5", font_size=14, color=COR_TEXTO),
+            Text(extenso, font_size=14, color=COR_TEXTO),
             Text(
                 "residuais " + " · ".join(f"{r:g}" for r in residuais),
                 font_size=12,
@@ -153,8 +156,13 @@ class EdmondsKarpIntro_new(Scene):
         # -- slide 4: o laço e a garantia do BFS -----------------------------
         self.play(FadeOut(texto3), FadeOut(rotulo_rev), run_time=0.3)
         texto4 = VGroup(
-            Text("O laço", font_size=16, color=COR_ACENTO, weight=BOLD),
-            Text("repete enquanto existir caminho na residual", font_size=13, color=COR_TEXTO),
+            Text(
+                "Edmonds-Karp = Ford-Fulkerson + BFS",
+                font_size=16,
+                color=COR_ACENTO,
+                weight=BOLD,
+            ),
+            Text("o laço repete enquanto existir caminho na residual", font_size=13, color=COR_TEXTO),
             Text(
                 "BFS ⇒ caminho de menor número de arestas",
                 font_size=13,

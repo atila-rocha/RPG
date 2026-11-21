@@ -166,11 +166,18 @@ class Step:
     destaque -- ("inicio"|"busca"|"caminho"|"aumento"|"corte"|"aresta"|"fim",
                  u, v, status)
     estado   -- dicionário com fluxos/capacidades/residuais/marcados/edgeTo/
-                adj (Bag real)/nivel (derivado do edgeTo)/caminho/gargalo/
-                valor/fila/pilha/iteracao/inspecoes/corte
+                ordem_descoberta/adj (lista real)/nivel (derivado do edgeTo)/
+                caminho/gargalo/valor/fila/pilha/iteracao/inspecoes/corte.
+                É o estado do trace do evento (o contrato antigo, inalterado).
     pausa    -- segundos de pausa depois da animação deste passo
     modulo   -- módulo do algs4 que contém a linha
     funcao   -- nome qualificado da função (a view do painel de código)
+    estado_pos -- estado do painel DEPOIS da linha: exatamente o `estado` do
+                passo seguinte (lookahead de `coletar_detalhado`). `None` no
+                último passo, que não tem passo seguinte.
+    escrita  -- qual aba a linha altera ("edge_to"|"marcados"|"busca"|"adj"|
+                "rede"), derivada do AST da fonte real; `None` para linhas
+                que só leem estado (validate, adj, other, residual...).
     """
 
     linha: int
@@ -180,12 +187,15 @@ class Step:
     pausa: float = 0.9
     modulo: str = ""
     funcao: str = ""
+    estado_pos: dict | None = None
+    escrita: str | None = None
 
     # Chaves sempre presentes em `estado` (listas/dicts vazios quando não se
     # aplica, nunca KeyError): marcados, edge_to, adj, nivel, valor, fila,
-    # pilha, inspecoes, corte, corte_capacidade. `adj` é a Bag real na ordem
-    # de iteração do `FlowNetwork`; `nivel` é DERIVADO do `edgeTo` (o algs4
-    # não tem profundidade em fluxo máximo) — ver `_adj_da_rede`/`_niveis`.
+    # pilha, inspecoes, corte, corte_capacidade, ordem_descoberta. `adj` é a
+    # lista real na ordem de iteração do `FlowNetwork`; `nivel` é DERIVADO do
+    # `edgeTo` (o algs4 não tem profundidade em fluxo máximo) — ver
+    # `_adj_da_rede`/`_niveis`.
 
 
 # ---------------------------------------------------------------------------
@@ -463,14 +473,14 @@ def _instantanea_rede(rede) -> dict:
 
 
 def _adj_da_rede(rede) -> dict[int, list[dict]]:
-    """Lista de adjacência REAL de cada vértice, na ORDEM da `Bag`.
+    """Lista de adjacência REAL de cada vértice, na ORDEM de iteração.
 
-    `FlowNetwork._adj[v]` é uma `Bag` do algs4 (`bag.py`: `Node(item,
-    oldfirst)`): `add` insere no INÍCIO, então iterar a Bag devolve as arestas
-    na ordem REVERSA de inserção (LIFO). É essa ordem que decide qual aresta a
-    BFS/DFS examina primeiro e, portanto, o caminho aumentante e o golden — por
-    isso é copiada aqui **sem ordenar nem deduplicar** (a mesma aresta aparece
-    uma vez na Bag de cada ponta).
+    `FlowNetwork._adj[v]` é uma lista e `add_edge` faz `insert(0, e)`: inserir
+    no INÍCIO, então iterar devolve as arestas na ordem REVERSA de inserção
+    (LIFO). É essa ordem que decide qual aresta a BFS/DFS examina primeiro e,
+    portanto, o caminho aumentante e o golden — por isso é copiada aqui **sem
+    ordenar nem deduplicar** (a mesma aresta aparece uma vez na lista de cada
+    ponta).
 
     Cada entrada descreve a aresta do ponto de vista de `v`:
     `{"w": extremo oposto, "saida": v é a cauda (`from_()`) → sentido direto,
@@ -752,7 +762,11 @@ def _estado(snap: dict, contador: dict) -> dict:
         "residual_reversa": residual_reversa,
         "marcados": marcados,
         "edge_to": edge_to,
-        # Bag REAL de cada vértice, na ordem de iteração do `FlowNetwork`
+        # ORDEM REAL de descoberta (`self.marked[w] = True`): é a fila que a
+        # aba `edgeTo` desenha, da frente (1º descoberto) ao fim (último).
+        "ordem_descoberta": list(contador.get("ordem_descoberta") or []),
+        # Lista de adjacência REAL de cada vértice, na ordem de iteração do
+        # `FlowNetwork`
         # (`{v: [{"w", "saida", "cap", "fluxo"}, ...]}`). Ordem = dado do
         # algoritmo; não reordene no painel.
         "adj": dict(snap.get("adj") or {}),
@@ -811,6 +825,54 @@ def _contadores_base(algoritmo: str) -> tuple[str, tuple[str, ...], int]:
     return busca, inspetores, _linha_aumento(modulo_principal)
 
 
+@lru_cache(maxsize=None)
+def _linhas_marcado(algoritmo: str) -> tuple[int, int, int]:
+    """`(reset do edgeTo, marked[s] = True, edgeTo[w] = e)` na BUSCA.
+
+    Derivadas do ast da função de busca, nunca digitadas. O `reset` é o
+    `self.edgeTo = [None] * g.V` que abre cada busca: a fila de descoberta
+    esvazia junto com a árvore. `s` entra quando `marked[s] = True`; cada `w`
+    entra quando `self.edgeTo[w] = e` o descobre — a mesma ordem em que a
+    árvore do `edgeTo` cresce.
+    """
+    modulo = TRECHOS[algoritmo][0]
+    classe = "FordFulkerson" if algoritmo == "edmonds_karp" else "FordFulkersonDFS"
+    qualificados = [f"{classe}.has_augmenting_path"]
+    if algoritmo != "edmonds_karp":
+        qualificados.append(f"{classe}.dfs")
+    reset = linha_s = linha_w = None
+    for qual in qualificados:
+        funcao = _no_funcao(modulo, qual)
+        for no in ast.walk(funcao):
+            if not isinstance(no, ast.Assign):
+                continue
+            alvo = no.targets[0] if no.targets else None
+            if isinstance(alvo, ast.Attribute) and alvo.attr == "edgeTo":
+                reset = no.lineno
+                continue
+            if not (
+                isinstance(alvo, ast.Subscript)
+                and isinstance(alvo.value, ast.Attribute)
+                and isinstance(alvo.slice, ast.Name)
+            ):
+                continue
+            if (
+                alvo.value.attr == "marked"
+                and alvo.slice.id == "s"
+                and isinstance(no.value, ast.Constant)
+                and no.value.value is True
+            ):
+                linha_s = no.lineno
+            elif alvo.value.attr == "edgeTo" and alvo.slice.id == "w":
+                linha_w = no.lineno
+    if reset is None or linha_s is None or linha_w is None:
+        raise LookupError(
+            f"{modulo}: esperava reset do edgeTo, marked[s] e edgeTo[w]; "
+            f"achei reset={reset}, s={linha_s}, w={linha_w}"
+        )
+    return reset, linha_s, linha_w
+
+
 def _contadores(eventos: list[dict], algoritmo: str) -> list[dict]:
     """Contadores acumulados por evento (determinísticos, sem timestamp).
 
@@ -818,16 +880,36 @@ def _contadores(eventos: list[dict], algoritmo: str) -> list[dict]:
                    (`e.residual_capacity_to(w) > 0`), somando todas as buscas;
     iteracao    -- número da busca em curso (1-based);
     augmentacoes-- quantas augmentações já terminaram (`value += bottle`);
-    gargalo     -- gargalo da última augmentação concluída.
+    gargalo     -- gargalo da última augmentação concluída;
+    ordem_descoberta -- vértices na ORDEM em que `self.marked[w] = True` rodou
+                   (a fila de descoberta que a aba `edgeTo` desenha).
     """
     busca, inspetores, linha_aumento = _contadores_base(algoritmo)
     modulo_principal = TRECHOS[algoritmo][0]
+    linha_reset, linha_marcado_s, linha_marcado_w = _linhas_marcado(algoritmo)
+    funcao_reset = busca
+    funcao_w = inspetores[0]
     inspecoes = 0
     iteracao = 0
     augmentacoes = 0
     gargalo = None
+    ordem: list[int] = []
+    # Efeitos que só valem para o estado DEPOIS da linha: o snapshot do
+    # `sys.settrace` é tirado ANTES de executar o evento, então a descoberta
+    # (ou o reset) da linha N tem de entrar no contador do evento N+1 — que é
+    # justamente o estado projetado do passo N.
+    reset_pendente = False
+    descobertas_pendentes: list[int] = []
     resultado: list[dict] = []
     for ev in eventos:
+        if reset_pendente:
+            ordem = []
+            reset_pendente = False
+        for descoberto in descobertas_pendentes:
+            if descoberto not in ordem:
+                ordem.append(descoberto)
+        descobertas_pendentes.clear()
+
         if ev["tipo"] == "call" and ev["funcao"] == busca:
             iteracao += 1
         if (
@@ -836,6 +918,19 @@ def _contadores(eventos: list[dict], algoritmo: str) -> list[dict]:
             and ev["chamador"] in inspetores
         ):
             inspecoes += 1
+        if ev["tipo"] == "line":
+            if ev["funcao"] == funcao_reset and ev["lineno"] == linha_reset:
+                # `self.marked = [False] * g.V` zera a árvore: a fila de
+                # descoberta recomeça vazia no evento seguinte.
+                reset_pendente = True
+            elif ev["funcao"] == funcao_reset and ev["lineno"] == linha_marcado_s:
+                s_busca = ev["locais"].get("s")
+                if isinstance(s_busca, int) and not isinstance(s_busca, bool):
+                    descobertas_pendentes.append(s_busca)
+            elif ev["funcao"] == funcao_w and ev["lineno"] == linha_marcado_w:
+                w = ev["locais"].get("w")
+                if isinstance(w, int) and not isinstance(w, bool):
+                    descobertas_pendentes.append(w)
         if (
             ev["tipo"] == "line"
             and ev["modulo"] == modulo_principal
@@ -850,6 +945,7 @@ def _contadores(eventos: list[dict], algoritmo: str) -> list[dict]:
                 "iteracao": iteracao,
                 "augmentacoes": augmentacoes,
                 "gargalo": gargalo,
+                "ordem_descoberta": list(ordem),
             }
         )
     return resultado
@@ -866,32 +962,232 @@ def _contadores(eventos: list[dict], algoritmo: str) -> list[dict]:
 TEXTOS: dict[tuple[str, int], tuple[str, Any, float]] = {}
 
 
-def _linha_do_def(modulo: str, qualname: str) -> int:
-    """Linha do `def` de `Classe.metodo` no fonte real do módulo."""
+def _no_funcao(modulo: str, qualname: str) -> ast.FunctionDef:
+    """Nó `ast.FunctionDef` de `Classe.metodo` no fonte real do módulo."""
     classe, _, nome = qualname.rpartition(".")
     arvore = ast.parse(arquivo_modulo(modulo).read_text(encoding="utf-8"))
     for no in ast.walk(arvore):
         if isinstance(no, ast.ClassDef) and no.name == classe:
             for filho in no.body:
                 if isinstance(filho, ast.FunctionDef) and filho.name == nome:
-                    return filho.lineno
+                    return filho
     raise LookupError(f"{modulo}: função {qualname!r} não existe no fonte")
 
 
-# Os textos abaixo estão escritos com os números de linha de
-# `FordFulkerson` (BFS). `excess`, `is_feasible` e `check` têm o MESMO corpo
-# nas duas variantes, mas começam em linhas diferentes no fonte da DFS; o
-# deslocamento é medido no ast, nunca digitado.
-DESLOC_FUNCAO: dict[str, int] = {}
-for _qual in ("FordFulkersonDFS.excess", "FordFulkersonDFS.is_feasible", "FordFulkersonDFS.check"):
-    _nome = _qual.split(".", 1)[1]
-    DESLOC_FUNCAO[_qual] = _linha_do_def("algs4.ford_fulkerson_dfs", _qual) - _linha_do_def(
-        "algs4.ford_fulkerson", f"FordFulkerson.{_nome}"
-    )
+# ---------------------------------------------------------------------------
+# Escritas em estruturas de dados (derivadas do AST)
+#
+# `Step.estado` é o estado do trace do evento; para uma linha que escreve
+# (`self.edgeTo[w] = e`, `queue.append(w)`, `self.flow += delta`...), o
+# consumidor precisa saber QUAL aba mostrar e qual é o estado DEPOIS da linha.
+# `escrita` e `estado_pos` são aditivos: o contrato de `estado` não muda.
+# ---------------------------------------------------------------------------
+
+# Atributos que correspondem a uma aba do painel. `E` é o contador da rede e
+# entra como `adj` porque é escrito dentro de `FlowNetwork.add_edge`.
+_ESTRUTURA_DO_ATRIBUTO = {
+    "edgeTo": "edge_to",
+    "marked": "marcados",
+    "_adj": "adj",
+    "value": "rede",
+    "flow": "rede",
+}
+
+
+def _nome_alvo(alvo: ast.AST) -> str | None:
+    """Nome do atributo/name escrito por um alvo de atribuição."""
+    if isinstance(alvo, ast.Name):
+        return alvo.id
+    if isinstance(alvo, ast.Attribute):
+        return alvo.attr
+    if isinstance(alvo, ast.Subscript):
+        return _nome_alvo(alvo.value)
+    return None
+
+
+def _metodo_chamado(no: ast.AST) -> str | None:
+    """Nome do método de uma chamada (`queue.append` -> `append`)."""
+    if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute):
+        return no.func.attr
+    return None
+
+
+def _base_chamada(no: ast.AST) -> str | None:
+    """Nome do receptor de uma chamada (`self._adj[v].insert` -> `_adj`)."""
+    if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute):
+        return _nome_alvo(no.func.value)
+    return None
+
+
+def _classificar_escrita(no: ast.AST, funcao: str) -> tuple[str, str] | None:
+    """(aba, tipo) de uma escrita, derivada só da forma do nó do AST.
+
+    `tipo` não vai para o `Step`; é o que o validador usa para saber o que
+    conferir no estado pós-linha (`reset`/`sub`, `append`/`popleft`/`dfs`/
+    `return`, `init`/`insert`/`e`, `value`/`flow`/`edge`).
+    """
+    if isinstance(no, ast.Assign):
+        for alvo in no.targets:
+            nome = _nome_alvo(alvo)
+            if nome is None:
+                continue
+            if nome in ("edgeTo", "marked"):
+                return _ESTRUTURA_DO_ATRIBUTO[nome], (
+                    "sub" if isinstance(alvo, ast.Subscript) else "reset"
+                )
+            if nome == "_adj":
+                return "adj", "init"
+            if funcao == "FlowEdge.__init__" and nome in ("v", "w", "capacity", "flow"):
+                return "rede", "edge"
+            if nome in ("value", "flow"):
+                return "rede", nome
+            if nome == "queue" and isinstance(alvo, ast.Name):
+                return "busca", "init"
+            if funcao == "FlowNetwork.add_edge" and nome == "E":
+                return "adj", "e"
+        # `v = queue.popleft()`: a escrita é na fila, não no alvo `v`.
+        if _metodo_chamado(no.value) == "popleft" and _base_chamada(no.value) == "queue":
+            return "busca", "popleft"
+        return None
+
+    if isinstance(no, ast.AugAssign):
+        nome = _nome_alvo(no.target)
+        if nome in ("value", "flow"):
+            return "rede", nome
+        if funcao == "FlowNetwork.add_edge" and nome == "E":
+            return "adj", "e"
+        return None
+
+    if isinstance(no, ast.Call):
+        metodo = _metodo_chamado(no)
+        base = _base_chamada(no)
+        if metodo in ("append", "popleft") and base == "queue":
+            return "busca", metodo
+        if metodo == "dfs" and base == "self":
+            return "busca", "dfs"
+        if metodo == "insert" and base == "_adj":
+            return "adj", "insert"
+        return None
+
+    if isinstance(no, ast.Return) and funcao.endswith(".dfs"):
+        return "busca", "return"
+
+    return None
+
+
+@lru_cache(maxsize=None)
+def mapa_escritas(algoritmo: str) -> dict[tuple[str, str, int], tuple[str, str]]:
+    """Mapa `(módulo, função, linha) -> (aba, tipo)` derivado do AST real.
+
+    Cobre as funções que escrevem nas estruturas do painel: o algoritmo
+    (`edgeTo`, `marked`, `queue`/`dfs`), a rede (`_adj`, `E`) e a aresta
+    (`flow`). Funções que só leem (`validate`, `adj`, `other`,
+    `residual_capacity_to`, `in_cut`) não entram no mapa. As linhas são
+    sempre `lineno` do AST — nenhum número é digitado.
+
+    `FlowEdge.__init__` entra no mapa (`rede`), mas não tem view em
+    `FUNCOES_PAINEL`: suas linhas nunca viram passos do painel. O ramo
+    aleatório de `FlowNetwork.__init__` também não executa com arquivo.
+    """
+    modulo_principal = TRECHOS[algoritmo][0]
+    classe = "FordFulkerson" if algoritmo == "edmonds_karp" else "FordFulkersonDFS"
+    funcoes = [
+        (modulo_principal, f"{classe}.__init__"),
+        (modulo_principal, f"{classe}.has_augmenting_path"),
+        (modulo_principal, f"{classe}.in_cut"),
+        (modulo_principal, f"{classe}.validate"),
+        (modulo_principal, f"{classe}.excess"),
+        (modulo_principal, f"{classe}.is_feasible"),
+        (modulo_principal, f"{classe}.check"),
+        ("algs4.flow_network", "FlowNetwork.__init__"),
+        ("algs4.flow_network", "FlowNetwork.validate_vertex"),
+        ("algs4.flow_network", "FlowNetwork.add_edge"),
+        ("algs4.flow_network", "FlowNetwork.adj"),
+        ("algs4.flow_edge", "FlowEdge.__init__"),
+        ("algs4.flow_edge", "FlowEdge.other"),
+        ("algs4.flow_edge", "FlowEdge.residual_capacity_to"),
+        ("algs4.flow_edge", "FlowEdge.add_residual_flow_to"),
+    ]
+    if algoritmo == "ford_fulkerson_dfs":
+        funcoes.append((modulo_principal, f"{classe}.dfs"))
+
+    mapa: dict[tuple[str, str, int], tuple[str, str]] = {}
+    for modulo, funcao in funcoes:
+        for no in ast.walk(_no_funcao(modulo, funcao)):
+            classificacao = _classificar_escrita(no, funcao)
+            if classificacao is None:
+                continue
+            linha = getattr(no, "lineno", None)
+            if linha is None:
+                continue
+            chave = (modulo, funcao, linha)
+            anterior = mapa.get(chave)
+            if anterior is not None and anterior != classificacao:
+                raise LookupError(
+                    f"{modulo}: {funcao} linha {linha} classificada como "
+                    f"{anterior} e {classificacao}"
+                )
+            mapa[chave] = classificacao
+    return mapa
+
+
+def _parear_linhas(a: ast.AST, b: ast.AST, mapa: dict[int, int]) -> None:
+    """Emparelha dois nós equivalentes e registra `linha_a -> linha_b`.
+
+    As variantes BFS/DFS repetem o MESMO corpo em arquivos diferentes. O
+    pareamento é estrutural (mesmo tipo de nó, mesmos filhos, na mesma ordem),
+    então comentários e quebras de linha do fonte não deslocam a narração.
+    """
+    if type(a) is not type(b):
+        raise LookupError(
+            f"corpos divergentes: {type(a).__name__} (linha "
+            f"{getattr(a, 'lineno', '?')}) vs {type(b).__name__} "
+            f"(linha {getattr(b, 'lineno', '?')})"
+        )
+    linha_a = getattr(a, "lineno", None)
+    linha_b = getattr(b, "lineno", None)
+    if linha_a is not None and linha_b is not None:
+        anterior = mapa.get(linha_a)
+        if anterior is not None and anterior != linha_b:
+            raise LookupError(
+                f"linha {linha_a} mapeia para {anterior} e {linha_b}: "
+                "os corpos deixaram de ser equivalentes"
+            )
+        mapa[linha_a] = linha_b
+    filhos_a = list(ast.iter_child_nodes(a))
+    filhos_b = list(ast.iter_child_nodes(b))
+    if len(filhos_a) != len(filhos_b):
+        raise LookupError(
+            f"corpos divergentes na linha {linha_a}: "
+            f"{len(filhos_a)} filhos vs {len(filhos_b)}"
+        )
+    for ca, cb in zip(filhos_a, filhos_b):
+        _parear_linhas(ca, cb, mapa)
+
+
+def _mapa_das_variantes() -> dict[str, dict[int, int]]:
+    """`função DFS -> {linha na BFS: linha na DFS}` (corpo idêntico)."""
+    mapa: dict[str, dict[int, int]] = {}
+    for nome in ("__init__", "in_cut", "validate", "excess", "is_feasible", "check"):
+        linhas: dict[int, int] = {}
+        _parear_linhas(
+            _no_funcao("algs4.ford_fulkerson", f"FordFulkerson.{nome}"),
+            _no_funcao("algs4.ford_fulkerson_dfs", f"FordFulkersonDFS.{nome}"),
+            linhas,
+        )
+        mapa[f"FordFulkersonDFS.{nome}"] = linhas
+    return mapa
+
+
+# Os textos abaixo são escritos com as linhas da variante BFS. Nas funções
+# cujo corpo é idêntico nas duas variantes, `_texto` traduz para a linha real
+# da DFS pelo mapa derivado do ast — nunca por um deslocamento digitado.
+MAPA_LINHAS_DFS = _mapa_das_variantes()
 
 
 def _texto(funcao: str, linha: int, texto: str, destaque: Any = None, pausa: float = PAUSA_CURTA) -> None:
-    TEXTOS[(funcao, linha + DESLOC_FUNCAO.get(funcao, 0))] = (texto, destaque, pausa)
+    linha = MAPA_LINHAS_DFS.get(funcao, {}).get(linha, linha)
+    TEXTOS[(funcao, linha)] = (texto, destaque, pausa)
 
 
 def _d_busca(status: str) -> Callable[[dict], tuple]:
@@ -951,7 +1247,7 @@ _texto("FlowNetwork.__init__", 125, "if arquivo is not None: lê a rede do arqui
 _texto("FlowNetwork.__init__", 126, "V, arestas = _ler_arquivo(arquivo): V, E e as triplas u w capacidade", pausa=PAUSA_MEDIA)
 _texto("FlowNetwork.__init__", 127, "self.V = {V}: {V} vértices declarados no cabeçalho")
 _texto("FlowNetwork.__init__", 128, "self.E = 0: nenhuma aresta inserida ainda")
-_texto("FlowNetwork.__init__", 129, "self._adj = [Bag() for _ in range(V)]: uma Bag por vértice")
+_texto("FlowNetwork.__init__", 129, "self._adj = [[] for _ in range(self.V)]: uma lista por vértice")
 _texto("FlowNetwork.__init__", 130, "for a, b, capacidade in arestas: próxima aresta do arquivo")
 _texto("FlowNetwork.__init__", 131, "self.add_edge(FlowEdge({e_u}, {e_v}, {cap_aresta:g})): aresta entra na rede", _d_insere, PAUSA_MEDIA)
 _texto("FlowNetwork.__init__", 132, "return: rede montada a partir do arquivo", pausa=PAUSA_MEDIA)
@@ -963,41 +1259,41 @@ _texto("FlowNetwork.add_edge", 152, "v = e.from_() = {e_u}: extremo de saída")
 _texto("FlowNetwork.add_edge", 153, "w = e.to() = {e_v}: extremo de chegada")
 _texto("FlowNetwork.add_edge", 154, "self.validate_vertex({e_u})")
 _texto("FlowNetwork.add_edge", 155, "self.validate_vertex({e_v})")
-_texto("FlowNetwork.add_edge", 156, "self._adj[{e_u}].add(e): a aresta entra na Bag de {e_u}")
-_texto("FlowNetwork.add_edge", 157, "self._adj[{e_v}].add(e): e também na Bag de {e_v} (aresta incidente)")
+_texto("FlowNetwork.add_edge", 156, "self._adj[{e_u}].insert(0, e): a aresta entra na FRENTE da lista de {e_u}")
+_texto("FlowNetwork.add_edge", 157, "self._adj[{e_v}].insert(0, e): e também na frente da lista de {e_v} (LIFO)")
 _texto("FlowNetwork.add_edge", 158, "self.E += 1: E = {E}", pausa=PAUSA_MEDIA)
 
 _texto("FlowNetwork.adj", 161, "self.validate_vertex({v})")
-_texto("FlowNetwork.adj", 162, "return self._adj[{v}]: Bag das arestas incidentes a {v}", pausa=PAUSA_MEDIA)
+_texto("FlowNetwork.adj", 162, "return self._adj[{v}]: lista de arestas incidentes a {v} (LIFO)", pausa=PAUSA_MEDIA)
 
 # -- FlowEdge --------------------------------------------------------------
 
-_texto("FlowEdge.other", 56, "if {vertex} == self.v ({aux_v}): o vértice é o rabo?")
-_texto("FlowEdge.other", 57, "return self.w = {aux_w}: o outro extremo")
-_texto("FlowEdge.other", 58, "elif {vertex} == self.w ({aux_w}): é a cabeça?")
-_texto("FlowEdge.other", 59, "return self.v = {aux_v}: o outro extremo")
-_texto("FlowEdge.other", 60, "else: nenhum dos dois extremos", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.other", 61, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.other", 57, "if {vertex} == self.v ({aux_v}): o vértice é o rabo?")
+_texto("FlowEdge.other", 58, "return self.w = {aux_w}: o outro extremo")
+_texto("FlowEdge.other", 59, "elif {vertex} == self.w ({aux_w}): é a cabeça?")
+_texto("FlowEdge.other", 60, "return self.v = {aux_v}: o outro extremo")
+_texto("FlowEdge.other", 61, "else: nenhum dos dois extremos", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.other", 62, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
 
-_texto("FlowEdge.residual_capacity_to", 64, "if {vertex} == self.v ({aux_v}): sentido REVERSO (desfazer)?")
-_texto("FlowEdge.residual_capacity_to", 65, "return flow = {aux_flow:g}: residual reverso = fluxo", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.residual_capacity_to", 66, "elif {vertex} == self.w ({aux_w}): sentido DIRETO?")
-_texto("FlowEdge.residual_capacity_to", 67, "return capacity - flow = {aux_cap:g} - {aux_flow:g} = {aux_res:g}: residual direto", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.residual_capacity_to", 68, "else: nenhum dos dois extremos", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.residual_capacity_to", 69, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.residual_capacity_to", 65, "if {vertex} == self.v ({aux_v}): sentido REVERSO (desfazer)?")
+_texto("FlowEdge.residual_capacity_to", 66, "return flow = {aux_flow:g}: residual reverso = fluxo", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.residual_capacity_to", 67, "elif {vertex} == self.w ({aux_w}): sentido DIRETO?")
+_texto("FlowEdge.residual_capacity_to", 68, "return capacity - flow = {aux_cap:g} - {aux_flow:g} = {aux_res:g}: residual direto", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.residual_capacity_to", 69, "else: nenhum dos dois extremos", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.residual_capacity_to", 70, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
 
-_texto("FlowEdge.add_residual_flow_to", 72, "if not (delta >= 0): delta = {delta:g} é válido?")
-_texto("FlowEdge.add_residual_flow_to", 74, "if {vertex} == self.v ({aux_v}): sentido reverso?")
-_texto("FlowEdge.add_residual_flow_to", 75, "self.flow -= {delta:g}: desfaz fluxo na aresta reversa", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.add_residual_flow_to", 76, "elif {vertex} == self.w ({aux_w}): sentido direto?")
-_texto("FlowEdge.add_residual_flow_to", 77, "self.flow += {delta:g}: aumenta o fluxo da aresta", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.add_residual_flow_to", 79, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.add_residual_flow_to", 81, "if abs(flow) <= eps: arredonda para 0?")
-_texto("FlowEdge.add_residual_flow_to", 82, "self.flow = 0.0: zera o resíduo numérico")
-_texto("FlowEdge.add_residual_flow_to", 83, "if abs(flow - capacity) <= eps: arredonda para a capacidade?")
-_texto("FlowEdge.add_residual_flow_to", 84, "self.flow = capacity: satura exatamente")
-_texto("FlowEdge.add_residual_flow_to", 85, "if not (flow >= 0): o fluxo ficou negativo?", pausa=PAUSA_MEDIA)
-_texto("FlowEdge.add_residual_flow_to", 87, "if not (flow <= capacity): o fluxo passou da capacidade?", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.add_residual_flow_to", 73, "if not (delta >= 0): delta = {delta:g} é válido?")
+_texto("FlowEdge.add_residual_flow_to", 75, "if {vertex} == self.v ({aux_v}): sentido reverso?")
+_texto("FlowEdge.add_residual_flow_to", 76, "self.flow -= {delta:g}: desfaz fluxo na aresta reversa", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.add_residual_flow_to", 77, "elif {vertex} == self.w ({aux_w}): sentido direto?")
+_texto("FlowEdge.add_residual_flow_to", 78, "self.flow += {delta:g}: aumenta o fluxo da aresta", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.add_residual_flow_to", 80, "raise: aresta inválida para este vértice", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.add_residual_flow_to", 82, "if abs(flow) <= eps: arredonda para 0?")
+_texto("FlowEdge.add_residual_flow_to", 83, "self.flow = 0.0: zera o resíduo numérico")
+_texto("FlowEdge.add_residual_flow_to", 84, "if abs(flow - capacity) <= eps: arredonda para a capacidade?")
+_texto("FlowEdge.add_residual_flow_to", 85, "self.flow = capacity: satura exatamente")
+_texto("FlowEdge.add_residual_flow_to", 86, "if not (flow >= 0): o fluxo ficou negativo?", pausa=PAUSA_MEDIA)
+_texto("FlowEdge.add_residual_flow_to", 88, "if not (flow <= capacity): o fluxo passou da capacidade?", pausa=PAUSA_MEDIA)
 
 # -- FordFulkerson(__init__) — comum às duas variantes ----------------------
 
@@ -1061,49 +1357,49 @@ for _classe in ("FordFulkerson", "FordFulkersonDFS"):
 
     _texto(_classe + ".is_feasible", 109, "for v in range(V): confere a capacidade de toda aresta")
     _texto(_classe + ".is_feasible", 110, "for e in g.adj({v})")
-    _texto(_classe + ".is_feasible", 111, "if 0 - eps <= flow <= capacity + eps: capacidade respeitada?")
-    _texto(_classe + ".is_feasible", 112, "print: aresta viola a capacidade", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 113, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 116, "if abs(value + excess({s})) > eps: a saída de {s} bate com |f|?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 117, "print: excesso na origem", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 118, "print: valor do fluxo", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 119, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 120, "if abs(value - excess({t})) > eps: a entrada em {t} bate com |f|?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 121, "print: excesso no sumidouro", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 122, "print: valor do fluxo", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 123, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 124, "for v in range(V): agora os vértices internos")
-    _texto(_classe + ".is_feasible", 125, "if {v} == {s} or {v} == {t}: pula origem e sumidouro")
-    _texto(_classe + ".is_feasible", 126, "continue: origem/sumidouro podem ter excesso")
-    _texto(_classe + ".is_feasible", 127, "elif abs(excess({v})) > eps: conservação em {v}?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 128, "print: fluxo líquido diferente de zero", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 129, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".is_feasible", 130, "return True: o fluxo é viável", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 111, "if flow < -eps ou flow > capacity + eps: capacidade respeitada?")
+    _texto(_classe + ".is_feasible", 113, "print: aresta viola a capacidade", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 114, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 117, "if abs(value + excess({s})) > eps: a saída de {s} bate com |f|?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 118, "print: excesso na origem", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 119, "print: valor do fluxo", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 120, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 121, "if abs(value - excess({t})) > eps: a entrada em {t} bate com |f|?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 122, "print: excesso no sumidouro", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 123, "print: valor do fluxo", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 124, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 125, "for v in range(V): agora os vértices internos")
+    _texto(_classe + ".is_feasible", 126, "if {v} == {s} or {v} == {t}: pula origem e sumidouro")
+    _texto(_classe + ".is_feasible", 127, "continue: origem/sumidouro podem ter excesso")
+    _texto(_classe + ".is_feasible", 128, "elif abs(excess({v})) > eps: conservação em {v}?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 129, "print: fluxo líquido diferente de zero", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 130, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".is_feasible", 131, "return True: o fluxo é viável", pausa=PAUSA_MEDIA)
 
-    _texto(_classe + ".check", 134, "if not is_feasible(g, s, t): o fluxo é viável?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 135, "print: fluxo inviável", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 136, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 139, "if not in_cut({s}): {s} está do lado da origem?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 140, "print: origem fora do lado da origem", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 141, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 142, "if in_cut({t}): {t} ficou fora do lado da origem?", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 143, "print: sumidouro no lado da origem", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 144, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 147, "mincut_value = 0.0: soma das capacidades que cruzam o corte")
-    _texto(_classe + ".check", 148, "for v in range(V): percorre todos os vértices")
-    _texto(_classe + ".check", 149, "for e in g.adj({v})")
+    _texto(_classe + ".check", 135, "if not is_feasible(g, s, t): o fluxo é viável?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 136, "print: fluxo inviável", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 137, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 140, "if not in_cut({s}): {s} está do lado da origem?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 141, "print: origem fora do lado da origem", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 142, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 143, "if in_cut({t}): {t} ficou fora do lado da origem?", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 144, "print: sumidouro no lado da origem", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 145, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 148, "mincut_value = 0.0: soma das capacidades que cruzam o corte")
+    _texto(_classe + ".check", 149, "for v in range(V): percorre todos os vértices")
+    _texto(_classe + ".check", 150, "for e in g.adj({v})")
     _texto(
         _classe + ".check",
-        150,
+        151,
         "if v == e.from_() and in_cut(from) and not in_cut(to): {e_u}->{e_v} cruza o corte?",
         _d_corte_aresta,
         PAUSA_MEDIA,
     )
-    _texto(_classe + ".check", 151, "mincut_value += {aux_cap:g}: capacidade do corte = {corte_capacidade:g}")
-    _texto(_classe + ".check", 152, "if abs(min_cut - value) > eps: valor do corte = valor do fluxo?", pausa=PAUSA_LONGA)
-    _texto(_classe + ".check", 153, "print: valores diferentes", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 154, "return False", pausa=PAUSA_MEDIA)
-    _texto(_classe + ".check", 156, "return True: |f| = {valor:g} = capacidade do corte", _d_corte_ok, PAUSA_LONGA)
+    _texto(_classe + ".check", 152, "mincut_value += {aux_cap:g}: capacidade do corte = {corte_capacidade:g}")
+    _texto(_classe + ".check", 153, "if abs(min_cut - value) > eps: valor do corte = valor do fluxo?", pausa=PAUSA_LONGA)
+    _texto(_classe + ".check", 154, "print: valores diferentes", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 155, "return False", pausa=PAUSA_MEDIA)
+    _texto(_classe + ".check", 157, "return True: |f| = {valor:g} = capacidade do corte", _d_corte_ok, PAUSA_LONGA)
 
 # -- Busca: BFS (Edmonds-Karp) --------------------------------------------
 
@@ -1126,7 +1422,7 @@ _texto(
     None,
     PAUSA_MEDIA,
 )
-_texto("FordFulkerson.has_augmenting_path", 84, "for e in g.adj({v}): arestas de {v} (Bag = ordem reversa de inserção)")
+_texto("FordFulkerson.has_augmenting_path", 84, "for e in g.adj({v}): arestas de {v} (lista: insert(0) = LIFO)")
 _texto("FordFulkerson.has_augmenting_path", 85, "w = e.other({v}) = {w}", _d_busca("olhando"))
 _texto(
     "FordFulkerson.has_augmenting_path",
@@ -1155,35 +1451,35 @@ _texto(
 
 # -- Busca: DFS (Ford-Fulkerson) ------------------------------------------
 
-_texto("FordFulkersonDFS.has_augmenting_path", 75, "self.edgeTo = [None] * V: caminho novo a cada busca")
-_texto("FordFulkersonDFS.has_augmenting_path", 76, "self.marked = [False] * V: ninguém alcançado")
-_texto("FordFulkersonDFS.has_augmenting_path", 79, "self.marked[{s}] = True: a origem começa marcada")
-_texto("FordFulkersonDFS.has_augmenting_path", 80, "self.dfs(g, {s}, {t}): mergulha na rede residual", None, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.has_augmenting_path", 76, "self.edgeTo = [None] * V: caminho novo a cada busca")
+_texto("FordFulkersonDFS.has_augmenting_path", 77, "self.marked = [False] * V: ninguém alcançado")
+_texto("FordFulkersonDFS.has_augmenting_path", 80, "self.marked[{s}] = True: a origem começa marcada")
+_texto("FordFulkersonDFS.has_augmenting_path", 81, "self.dfs(g, {s}, {t}): mergulha na rede residual", None, PAUSA_MEDIA)
 _texto(
     "FordFulkersonDFS.has_augmenting_path",
-    83,
+    84,
     "return marked[{t}] = {achou_caminho}: {resposta_busca}",
     _d_while_busca,
     PAUSA_LONGA,
 )
 
-_texto("FordFulkersonDFS.dfs", 86, "if {v} == {t}: chegou ao sumidouro?", None, PAUSA_MEDIA)
-_texto("FordFulkersonDFS.dfs", 87, "return True: caminho encontrado — a busca para aqui", None, PAUSA_LONGA)
-_texto("FordFulkersonDFS.dfs", 88, "for e in g.adj({v}): arestas de {v} (Bag = ordem reversa de inserção)")
-_texto("FordFulkersonDFS.dfs", 89, "w = e.other({v}) = {w}", _d_busca("olhando"))
+_texto("FordFulkersonDFS.dfs", 87, "if {v} == {t}: chegou ao sumidouro?", None, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.dfs", 88, "return True: caminho encontrado — a busca para aqui", None, PAUSA_LONGA)
+_texto("FordFulkersonDFS.dfs", 89, "for e in g.adj({v}): arestas de {v} (lista: insert(0) = LIFO)")
+_texto("FordFulkersonDFS.dfs", 90, "w = e.other({v}) = {w}", _d_busca("olhando"))
 _texto(
     "FordFulkersonDFS.dfs",
-    92,
+    93,
     "if residual_capacity_to({w}) > 0: residual {residual:g} → {resposta_residual}",
     _d_busca("examina"),
     PAUSA_MEDIA,
 )
-_texto("FordFulkersonDFS.dfs", 93, "if not marked[{w}]: {resposta_marcado}", None, PAUSA_MEDIA)
-_texto("FordFulkersonDFS.dfs", 94, "edgeTo[{w}] = {e_u}->{e_v}: aresta que descobriu {w}", _d_descoberto, PAUSA_MEDIA)
-_texto("FordFulkersonDFS.dfs", 95, "marked[{w}] = True: {w} descoberto")
-_texto("FordFulkersonDFS.dfs", 96, "if self.dfs(g, {w}, {t}): desce para {w}", None, PAUSA_MEDIA)
-_texto("FordFulkersonDFS.dfs", 97, "return True: propaga o achado para quem chamou", None, PAUSA_LONGA)
-_texto("FordFulkersonDFS.dfs", 98, "return False: beco sem saída em {v}", None, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.dfs", 94, "if not marked[{w}]: {resposta_marcado}", None, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.dfs", 95, "edgeTo[{w}] = {e_u}->{e_v}: aresta que descobriu {w}", _d_descoberto, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.dfs", 96, "marked[{w}] = True: {w} descoberto")
+_texto("FordFulkersonDFS.dfs", 97, "if self.dfs(g, {w}, {t}): desce para {w}", None, PAUSA_MEDIA)
+_texto("FordFulkersonDFS.dfs", 98, "return True: propaga o achado para quem chamou", None, PAUSA_LONGA)
+_texto("FordFulkersonDFS.dfs", 99, "return False: beco sem saída em {v}", None, PAUSA_MEDIA)
 
 
 def _gargalo_do_caminho(estado: dict, caminho: list[tuple[int, int]]) -> float:
@@ -1433,6 +1729,20 @@ def _faixas_simples(modulo: str) -> dict[int, tuple[int, int]]:
             fim = getattr(no, "end_lineno", None) or no.lineno
             for linha in range(no.lineno, fim + 1):
                 faixas[linha] = (no.lineno, fim)
+
+    # Cabeçalho de comando composto quebrado em várias linhas (`if (...)`
+    # continuado no `or`): a continuação NÃO é um passo novo, é a mesma
+    # condição. Só o cabeçalho é colapsado; o corpo continua com um passo por
+    # linha. Sem isto, um `if` de duas linhas no fonte do algs4 virava dois
+    # passos e a narração da segunda metade ficava órfã.
+    compostos = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)
+    for no in ast.walk(arvore):
+        if not isinstance(no, compostos) or not no.body:
+            continue
+        inicio = no.lineno
+        fim_cabecalho = no.body[0].lineno - 1
+        for linha in range(inicio + 1, fim_cabecalho + 1):
+            faixas.setdefault(linha, (inicio, fim_cabecalho))
     return faixas
 
 
@@ -1453,6 +1763,7 @@ def passos_detalhados(algoritmo: str) -> list[Step]:
     contadores = _contadores(eventos, algoritmo)
     estados = [_estado(ev, contadores[i]) for i, ev in enumerate(eventos)]
     modulo_principal = TRECHOS[algoritmo][0]
+    mapa = mapa_escritas(algoritmo)
     passos: list[Step] = []
     ultimo_ev: dict | None = None
 
@@ -1509,6 +1820,7 @@ def passos_detalhados(algoritmo: str) -> list[Step]:
         ):
             continue
 
+        escrita = mapa.get((ev["modulo"], ev["funcao"], ev["lineno"]), (None, None))[0]
         passos.append(
             Step(
                 linha=ev["lineno"],
@@ -1518,9 +1830,16 @@ def passos_detalhados(algoritmo: str) -> list[Step]:
                 pausa=pausa,
                 modulo=ev["modulo"],
                 funcao=ev["funcao"],
+                escrita=escrita,
             )
         )
         ultimo_ev = ev
+
+    # `estado_pos` é o lookahead do próximo `estado`: o consumidor visual usa
+    # o estado DEPOIS da linha para mostrar a escrita na própria linha, sem
+    # esperar o passo seguinte. O último passo não tem próximo: `None`.
+    for i in range(len(passos) - 1):
+        passos[i] = replace(passos[i], estado_pos=passos[i + 1].estado)
 
     return passos
 
